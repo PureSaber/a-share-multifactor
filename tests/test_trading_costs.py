@@ -4,6 +4,7 @@ import pytest
 from a_share_multifactor.config import CostsConfig
 from a_share_multifactor.trading_costs import (
     HoldingMeta,
+    _trading_day_index,
     buy_trade_cost,
     estimate_leg_rebalance_cost,
     retail_daily_step,
@@ -13,7 +14,6 @@ from a_share_multifactor.trading_costs import (
     select_retail_targets,
     sell_trade_cost,
     simulate_long_only_rebalance,
-    _trading_day_index,
 )
 
 
@@ -120,23 +120,23 @@ def test_select_retail_targets_caps_holdings() -> None:
 
 
 def _daily_costs(**overrides: object) -> CostsConfig:
-    base = dict(
-        retail_mode=True,
-        commission=0.0,
-        slippage=0.0,
-        min_commission=0.0,
-        stamp_tax=0.0,
-        lot_size=100,
-        initial_capital=10_000,
-        max_holdings=2,
-        partial_rebalance=True,
-        trade_freq="daily",
-        min_holding_days=3,
-        early_exit_single_day_return=0.08,
-        early_exit_consecutive_days=3,
-        early_exit_consecutive_daily=0.03,
-        early_exit_cumulative_return=0.25,
-    )
+    base: dict[str, object] = {
+        "retail_mode": True,
+        "commission": 0.0,
+        "slippage": 0.0,
+        "min_commission": 0.0,
+        "stamp_tax": 0.0,
+        "lot_size": 100,
+        "initial_capital": 10_000,
+        "max_holdings": 2,
+        "partial_rebalance": True,
+        "trade_freq": "daily",
+        "min_holding_days": 3,
+        "early_exit_single_day_return": 0.08,
+        "early_exit_consecutive_days": 3,
+        "early_exit_consecutive_daily": 0.03,
+        "early_exit_cumulative_return": 0.25,
+    }
     base.update(overrides)
     return CostsConfig(**base)
 

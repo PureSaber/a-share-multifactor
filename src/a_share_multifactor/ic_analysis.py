@@ -118,7 +118,7 @@ def analyze_ic_decay(
         return_col = f"forward_return_{horizon}d"
         temp = panel.copy()
         temp[return_col] = temp.groupby(symbol_col)[price_col].transform(
-            lambda s: s.shift(-horizon) / s - 1
+            lambda s, h=horizon: s.shift(-h) / s - 1
         )
         for factor_col in factor_cols:
             ic_series = calc_ic_series(temp, factor_col, return_col, date_col=date_col)

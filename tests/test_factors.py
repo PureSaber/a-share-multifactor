@@ -1,8 +1,8 @@
 import pandas as pd
 
+from a_share_multifactor.calendar import rebalance_dates
 from a_share_multifactor.factors import apply_factor_directions, compute_factors
 from a_share_multifactor.preprocess import add_period_return
-from a_share_multifactor.calendar import rebalance_dates
 
 
 def test_compute_momentum():

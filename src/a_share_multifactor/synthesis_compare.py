@@ -83,7 +83,7 @@ def _stats_from_returns(
         "ann_return": ann_return,
         "ann_vol": ann_vol,
         "sharpe": sharpe,
-        "rebalance_periods": int(len(clean)),
+        "rebalance_periods": len(clean),
     }
 
 
@@ -172,7 +172,7 @@ def run_synthesis_comparison(
                 "method": method,
                 "label": METHOD_LABELS.get(method, method),
                 **metrics,
-                "trade_pairs": int(len(ledger)),
+                "trade_pairs": len(ledger),
             }
         )
 

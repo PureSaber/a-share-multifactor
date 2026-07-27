@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -28,7 +28,7 @@ def write_outputs(
 ) -> Path:
     """Write IC summary and backtest results to outputs directory."""
     root = output_root or Path(config.outputs_dir)
-    run_dir = root / datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = root / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     latest_dir = root / "latest"
     run_dir.mkdir(parents=True, exist_ok=True)
     latest_dir.mkdir(parents=True, exist_ok=True)

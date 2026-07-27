@@ -1,7 +1,12 @@
 import pandas as pd
 
-from a_share_multifactor.ic_analysis import analyze_factors, calc_ic, calc_rank_ic, summarize_ic
-from a_share_multifactor.ic_analysis import calc_ic_series
+from a_share_multifactor.ic_analysis import (
+    analyze_factors,
+    calc_ic,
+    calc_ic_series,
+    calc_rank_ic,
+    summarize_ic,
+)
 
 
 def test_calc_ic_perfect_positive() -> None:

@@ -127,7 +127,7 @@ def _stats_from_returns(
         "total_return_pct": float((capital.iloc[-1] / initial_capital - 1) * 100),
         "ann_return": ann_return,
         "sharpe": sharpe,
-        "trade_periods": int(len(clean)),
+        "trade_periods": len(clean),
     }
 
 

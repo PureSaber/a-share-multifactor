@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 def round_to_lots(shares: float, lot_size: int) -> int:
     """Round share count down to the nearest tradable lot."""
     if lot_size <= 0:
-        return int(math.floor(shares))
+        return math.floor(shares)
     return int(shares // lot_size) * lot_size
 
 
@@ -353,9 +353,7 @@ def _early_exit_triggered(
         return True
     if cumulative >= costs.early_exit_cumulative_return:
         return True
-    if meta.consecutive_up_days >= costs.early_exit_consecutive_days:
-        return True
-    return False
+    return meta.consecutive_up_days >= costs.early_exit_consecutive_days
 
 
 def _can_sell_locked_position(
@@ -464,7 +462,7 @@ def retail_daily_step(
 
 def simulate_daily_retail_portfolio(
     panel: pd.DataFrame,
-    config: "AppConfig",
+    config: AppConfig,
     score_col: str,
     long_quantile: int,
     trade_dates: pd.DatetimeIndex,

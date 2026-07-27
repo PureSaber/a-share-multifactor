@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pandas as pd
 
+from a_share_multifactor.calendar import rebalance_dates as get_rebalance_dates
 from a_share_multifactor.config import AppConfig
 from a_share_multifactor.factors import apply_factor_directions, compute_factors
 from a_share_multifactor.neutralize import neutralize_cross_section
-from a_share_multifactor.calendar import rebalance_dates as get_rebalance_dates
 
 
 def winsorize_cross_section(
