@@ -42,7 +42,7 @@ a-share-multifactor/
 
 ```bash
 # 1. 克隆并安装
-git clone https://github.com/YOUR_USER/a-share-multifactor.git
+git clone https://github.com/PureSaber/a-share-multifactor.git
 cd a-share-multifactor
 python -m venv .venv
 
