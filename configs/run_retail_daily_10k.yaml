@@ -1,0 +1,71 @@
+# 散户日频模拟：1万元纯多头，2025 至今
+# 每日调仓打分 + 最少持有20交易日 + 大涨提前止盈
+universe: hs300
+start_date: "2020-01-01"
+end_date: "2026-07-17"
+
+factors:
+  - market_cap
+  - pe_ratio
+  - pb_ratio
+  - momentum_20d
+  - volatility_20d
+
+factor_directions:
+  market_cap: -1
+  pe_ratio: -1
+  pb_ratio: -1
+  momentum_20d: 1
+  volatility_20d: -1
+
+quantiles: 5
+rebalance_freq: monthly
+holding_period: rebalance
+forward_return_days: 20
+outputs_dir: outputs
+
+filters:
+  use_historical_universe: false
+  exclude_st: false
+  min_list_days: 0
+  pit_fundamentals: true
+  fundamental_lag_days: 0
+
+preprocess:
+  winsorize: [0.01, 0.99]
+  standardize: zscore
+  neutralize: false
+
+synthesis:
+  method: equal_weight
+  lookback_months: 12
+
+ic_decay_horizons: [1, 5, 10, 20]
+
+costs:
+  commission: 0.0003
+  slippage: 0.001
+  retail_mode: true
+  min_commission: 5.0
+  stamp_tax: 0.0005
+  lot_size: 100
+  initial_capital: 10000
+  max_holdings: 10
+  partial_rebalance: true
+  trade_freq: daily
+  min_holding_days: 20
+  early_exit_single_day_return: 0.08
+  early_exit_consecutive_days: 3
+  early_exit_consecutive_daily: 0.03
+  early_exit_cumulative_return: 0.25
+
+fetch:
+  max_workers: 1
+  sleep_seconds: 0.3
+  max_retries: 3
+
+data:
+  price: cn_a/daily/prices.parquet
+  fundamentals: cn_a/fundamentals.parquet
+  universe: cn_a/universe/hs300_membership.parquet
+  benchmark: cn_a/benchmark/hs300_index.parquet

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a-share-multifactor"
+version = "0.2.0"
+description = "A-share multi-factor stock selection research project"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "scikit-learn>=1.3",
+    "akshare>=1.12",
+    "pyarrow>=14.0",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4",
+    "jupyterlab>=4.0",
+]
+
+[project.scripts]
+asm-fetch = "a_share_multifactor.fetch_data:main"
+asm-backtest = "a_share_multifactor.backtest:main"
+asm-grid-search = "a_share_multifactor.grid_search:main"
+asm-compare = "a_share_multifactor.synthesis_compare:main"
+asm-retail-grid = "a_share_multifactor.retail_param_grid:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["E402"]
