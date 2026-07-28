@@ -1,14 +1,14 @@
 import pandas as pd
-
-from a_share_multifactor.config import AppConfig, DataPaths, FilterConfig
-from a_share_multifactor.data_loader import build_dataset
-from a_share_multifactor.factors import compute_factors
 from quant_data_kit.panel import (
     add_industry_relative_strength,
     merge_earnings_to_panel,
     merge_northbound_to_panel,
 )
 from quant_data_kit.storage import save_parquet
+
+from a_share_multifactor.config import AppConfig, DataPaths, FilterConfig
+from a_share_multifactor.data_loader import build_dataset
+from a_share_multifactor.factors import compute_factors
 
 
 def test_alt_merge_columns(tmp_path) -> None:

@@ -7,6 +7,16 @@ import logging
 from pathlib import Path
 
 import pandas as pd
+from quant_data_kit.providers.benchmark import fetch_hs300_benchmark
+from quant_data_kit.providers.earnings_forecast import fetch_earnings_forecasts
+from quant_data_kit.providers.fundamentals import fetch_fundamentals
+from quant_data_kit.providers.industry import fetch_industry_returns
+from quant_data_kit.providers.northbound import fetch_northbound_holdings
+from quant_data_kit.providers.prices import fetch_daily_prices
+from quant_data_kit.providers.universe import (
+    fetch_hs300_constituents,
+    fetch_hs300_constituents_history,
+)
 
 from a_share_multifactor.config import load_config
 from a_share_multifactor.data_loader import (
@@ -16,13 +26,6 @@ from a_share_multifactor.data_loader import (
     save_parquet,
     should_refresh_cache,
 )
-from quant_data_kit.providers.benchmark import fetch_hs300_benchmark
-from quant_data_kit.providers.earnings_forecast import fetch_earnings_forecasts
-from quant_data_kit.providers.fundamentals import fetch_fundamentals
-from quant_data_kit.providers.industry import fetch_industry_returns
-from quant_data_kit.providers.northbound import fetch_northbound_holdings
-from quant_data_kit.providers.prices import fetch_daily_prices
-from quant_data_kit.providers.universe import fetch_hs300_constituents, fetch_hs300_constituents_history
 
 logger = logging.getLogger(__name__)
 

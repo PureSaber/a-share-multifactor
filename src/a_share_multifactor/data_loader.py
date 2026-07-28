@@ -6,16 +6,6 @@ import logging
 from pathlib import Path
 
 import pandas as pd
-
-from a_share_multifactor.config import AppConfig
-from quant_data_kit.storage import (
-    cache_covers_range,
-    incremental_start_date,
-    load_parquet,
-    parse_date,
-    save_parquet,
-    should_refresh_cache,
-)
 from quant_data_kit.panel import (
     add_industry_relative_strength,
     merge_earnings_to_panel,
@@ -24,7 +14,20 @@ from quant_data_kit.panel import (
 from quant_data_kit.providers.benchmark import fetch_hs300_benchmark
 from quant_data_kit.providers.fundamentals import fetch_fundamentals
 from quant_data_kit.providers.prices import fetch_daily_prices
-from quant_data_kit.providers.universe import fetch_hs300_constituents, fetch_hs300_constituents_history
+from quant_data_kit.providers.universe import (
+    fetch_hs300_constituents,
+    fetch_hs300_constituents_history,
+)
+from quant_data_kit.storage import (
+    cache_covers_range,
+    incremental_start_date,
+    load_parquet,
+    parse_date,
+    save_parquet,
+    should_refresh_cache,
+)
+
+from a_share_multifactor.config import AppConfig
 
 logger = logging.getLogger(__name__)
 

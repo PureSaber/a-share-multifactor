@@ -6,7 +6,6 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-
 from quant_data_kit.panel import (
     add_industry_relative_strength,
     merge_earnings_to_panel,
