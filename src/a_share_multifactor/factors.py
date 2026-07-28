@@ -46,15 +46,28 @@ def _turnover_20d(df: pd.DataFrame) -> pd.Series:
     return df.groupby("symbol")["volume"].transform(lambda s: compute_turnover(s, 20))
 
 
+def _northbound_chg_5d(df: pd.DataFrame) -> pd.Series:
+    return df.groupby("symbol")["northbound_hold_ratio"].transform(
+        lambda s: s.pct_change(5, fill_method=None)
+    )
+
+
 FACTOR_REGISTRY: dict[str, FactorFn] = {
     "momentum_20d": _momentum_20d,
     "reversal_5d": _reversal_5d,
     "volatility_20d": _volatility_20d,
     "turnover_20d": _turnover_20d,
+    "northbound_chg_5d": _northbound_chg_5d,
 }
 
-# Factors sourced directly from merged price/fundamental columns.
-PASSTHROUGH_FACTORS = {"market_cap", "pe_ratio", "pb_ratio"}
+# Factors sourced directly from merged columns (fundamentals + alt data).
+PASSTHROUGH_FACTORS = {
+    "market_cap",
+    "pe_ratio",
+    "pb_ratio",
+    "forecast_score",
+    "industry_rs_20d",
+}
 
 
 def compute_factors(price_df: pd.DataFrame, factor_names: list[str] | None = None) -> pd.DataFrame:

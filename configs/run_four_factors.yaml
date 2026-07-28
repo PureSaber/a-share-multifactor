@@ -1,0 +1,74 @@
+# Four-category factor research config
+# 基本面 / 技术面 / 情感面 / 宏观面 — one representative factor each (plus existing basics)
+
+universe: hs300
+start_date: "2023-01-01"
+end_date: "2024-06-30"
+
+factors:
+  # 基本面
+  - pe_ratio
+  - pb_ratio
+  - market_cap
+  - forecast_score
+  # 技术面
+  - momentum_20d
+  - volatility_20d
+  # 情感面
+  - northbound_chg_5d
+  # 宏观面
+  - industry_rs_20d
+
+factor_directions:
+  market_cap: -1
+  pe_ratio: -1
+  pb_ratio: -1
+  momentum_20d: 1
+  volatility_20d: -1
+  forecast_score: 1
+  northbound_chg_5d: 1
+  industry_rs_20d: 1
+
+quantiles: 5
+rebalance_freq: monthly
+holding_period: rebalance
+forward_return_days: 20
+outputs_dir: outputs/four_factors
+
+filters:
+  use_historical_universe: true
+  exclude_st: true
+  min_list_days: 60
+  pit_fundamentals: true
+  fundamental_lag_days: 0
+
+preprocess:
+  winsorize: [0.01, 0.99]
+  standardize: zscore
+  neutralize: false
+  neutralize_by: [industry]
+
+synthesis:
+  method: equal_weight
+  lookback_months: 12
+  ridge_alpha: 1.0
+
+ic_decay_horizons: [1, 5, 10, 20]
+
+costs:
+  commission: 0.0003
+  slippage: 0.001
+
+fetch:
+  max_workers: 2
+  sleep_seconds: 0.3
+  max_retries: 3
+
+data:
+  price: cn_a/daily/prices.parquet
+  fundamentals: cn_a/fundamentals.parquet
+  universe: cn_a/universe/hs300_membership.parquet
+  benchmark: cn_a/benchmark/hs300_index.parquet
+  earnings_forecast: cn_a/alt/earnings_forecast.parquet
+  northbound: cn_a/alt/northbound_holdings.parquet
+  industry_returns: cn_a/alt/industry_returns.parquet
