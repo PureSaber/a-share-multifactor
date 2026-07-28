@@ -1,4 +1,4 @@
-"""CLI to fetch and cache market data from AKShare."""
+"""CLI to fetch and cache market data from AKShare via quant-data-kit."""
 
 from __future__ import annotations
 
@@ -11,18 +11,68 @@ import pandas as pd
 from a_share_multifactor.config import load_config
 from a_share_multifactor.data_loader import (
     build_dataset,
-    fetch_daily_prices,
-    fetch_fundamentals,
-    fetch_hs300_benchmark,
-    fetch_hs300_constituents,
-    fetch_hs300_constituents_history,
     incremental_start_date,
     load_parquet,
     save_parquet,
     should_refresh_cache,
 )
+from quant_data_kit.providers.benchmark import fetch_hs300_benchmark
+from quant_data_kit.providers.earnings_forecast import fetch_earnings_forecasts
+from quant_data_kit.providers.fundamentals import fetch_fundamentals
+from quant_data_kit.providers.industry import fetch_industry_returns
+from quant_data_kit.providers.northbound import fetch_northbound_holdings
+from quant_data_kit.providers.prices import fetch_daily_prices
+from quant_data_kit.providers.universe import fetch_hs300_constituents, fetch_hs300_constituents_history
 
 logger = logging.getLogger(__name__)
+
+
+def _fetch_alt_data(
+    config,
+    args,
+    symbols: list[str],
+    data_dir: Path,
+) -> None:
+    earnings_path = data_dir / config.data.earnings_forecast
+    if args.force or not earnings_path.exists():
+        logger.info("Fetching earnings forecasts...")
+        earnings = fetch_earnings_forecasts(
+            config.start_date,
+            config.end_date,
+            sleep_seconds=config.fetch.sleep_seconds,
+        )
+        save_parquet(earnings, earnings_path)
+        logger.info("Saved earnings forecasts: %s rows", len(earnings))
+
+    northbound_path = data_dir / config.data.northbound
+    if args.force or not northbound_path.exists():
+        logger.info("Fetching northbound holdings for %s symbols...", len(symbols))
+        northbound = fetch_northbound_holdings(
+            symbols,
+            sleep_seconds=config.fetch.sleep_seconds,
+            max_workers=config.fetch.max_workers,
+        )
+        save_parquet(northbound, northbound_path)
+        logger.info("Saved northbound: %s rows", len(northbound))
+
+    industry_path = data_dir / config.data.industry_returns
+    if args.force or not industry_path.exists():
+        price_path = data_dir / config.data.price
+        industries: list[str] = []
+        if price_path.exists():
+            prices = load_parquet(price_path)
+            if "industry" in prices.columns:
+                industries = sorted(prices["industry"].dropna().unique().tolist())
+        if industries:
+            logger.info("Fetching industry returns for %s industries...", len(industries))
+            industry_returns = fetch_industry_returns(
+                industries,
+                config.start_date,
+                config.end_date,
+                sleep_seconds=config.fetch.sleep_seconds,
+            )
+            save_parquet(industry_returns, industry_path)
+            logger.info("Saved industry returns: %s rows", len(industry_returns))
 
 
 def main() -> None:
@@ -31,6 +81,7 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("./data"))
     parser.add_argument("--force", action="store_true", help="Force refresh even if cache exists")
     parser.add_argument("--symbols-limit", type=int, default=0, help="Limit symbols for debugging")
+    parser.add_argument("--fetch-alt", action="store_true", help="Also fetch alt data (earnings, northbound, industry)")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -59,6 +110,8 @@ def main() -> None:
     refresh_benchmark = args.force or should_refresh_cache(
         benchmark_path, config.start_date, config.end_date
     )
+
+    symbols: list[str] = []
 
     if refresh_prices:
         logger.info("Fetching HS300 constituents and daily prices...")
@@ -142,7 +195,15 @@ def main() -> None:
         save_parquet(benchmark, benchmark_path)
         logger.info("Saved benchmark: %s (%s rows)", benchmark_path, len(benchmark))
 
-    panel = build_dataset(config, data_dir=args.data_dir, force_refresh=False)
+    if not symbols and price_path.exists():
+        symbols = sorted(load_parquet(price_path)["symbol"].unique().tolist())
+        if args.symbols_limit > 0:
+            symbols = symbols[: args.symbols_limit]
+
+    if args.fetch_alt and symbols:
+        _fetch_alt_data(config, args, symbols, args.data_dir)
+
+    panel = build_dataset(config, data_dir=args.data_dir, force_refresh=False, include_alt=args.fetch_alt)
     logger.info(
         "Dataset ready: %s rows, %s symbols, %s to %s",
         len(panel),

@@ -18,6 +18,7 @@ dependencies = [
     "akshare>=1.12",
     "pyarrow>=14.0",
     "matplotlib>=3.8",
+    "quant-data-kit @ file:../quant-data-kit",
 ]
 
 [project.optional-dependencies]

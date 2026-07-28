@@ -16,6 +16,9 @@ DEFAULT_FACTOR_DIRECTIONS: dict[str, int] = {
     "reversal_5d": 1,
     "turnover_20d": -1,
     "volatility_20d": -1,
+    "forecast_score": 1,
+    "northbound_chg_5d": 1,
+    "industry_rs_20d": 1,
 }
 
 
@@ -25,6 +28,9 @@ class DataPaths:
     fundamentals: str = "cn_a/fundamentals.parquet"
     universe: str = "cn_a/universe/hs300_membership.parquet"
     benchmark: str = "cn_a/benchmark/hs300_index.parquet"
+    earnings_forecast: str = "cn_a/alt/earnings_forecast.parquet"
+    northbound: str = "cn_a/alt/northbound_holdings.parquet"
+    industry_returns: str = "cn_a/alt/industry_returns.parquet"
 
 
 @dataclass
@@ -191,6 +197,13 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
             fundamentals=data_raw.get("fundamentals", defaults.data.fundamentals),
             universe=data_raw.get("universe", defaults.data.universe),
             benchmark=data_raw.get("benchmark", defaults.data.benchmark),
+            earnings_forecast=data_raw.get(
+                "earnings_forecast", defaults.data.earnings_forecast
+            ),
+            northbound=data_raw.get("northbound", defaults.data.northbound),
+            industry_returns=data_raw.get(
+                "industry_returns", defaults.data.industry_returns
+            ),
         ),
         filters=FilterConfig(
             use_historical_universe=bool(

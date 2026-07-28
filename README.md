@@ -6,7 +6,36 @@ A 股多因子选股研究项目：从 AKShare 拉取行情，计算因子，做
 
 ## 技术栈
 
-Python · Pandas · Scikit-learn · AKShare · PyArrow · Matplotlib
+Python · Pandas · Scikit-learn · [**quant-data-kit**](../quant-data-kit) · AKShare · PyArrow · Matplotlib
+
+## 四类因子（基本面 / 技术面 / 情感面 / 宏观面）
+
+| 类别 | 因子 | 说明 |
+|------|------|------|
+| 基本面 | `pe_ratio`, `pb_ratio`, `market_cap`, `forecast_score` | 估值 + 业绩预告得分 |
+| 技术面 | `momentum_20d`, `volatility_20d` | 动量、波动 |
+| 情感面 | `northbound_chg_5d` | 北向持股 5 日变化（T+1 披露滞后） |
+| 宏观面 | `industry_rs_20d` | 行业 20 日相对 HS300 强弱 |
+
+```bash
+# 安装 quant-data-kit 数据层（editable）
+pip install -e ../quant-data-kit[akshare,dev]
+pip install -e ".[dev]"
+
+# 拉取含另类数据
+python -m a_share_multifactor.fetch_data --fetch-alt --symbols-limit 10 --verbose
+
+# 四类因子 IC + 回测
+python -m a_share_multifactor.backtest --config configs/run_four_factors.yaml --verbose
+# 输出: outputs/four_factors/ic_summary.csv, report.html
+```
+
+离线 smoke test（无网络时）：
+
+```bash
+python scripts/seed_alt_smoke_data.py
+python -m a_share_multifactor.backtest --config configs/run_four_factors.yaml --symbols-limit 5
+```
 
 ## 功能概览
 
