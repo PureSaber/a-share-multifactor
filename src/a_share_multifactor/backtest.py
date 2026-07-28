@@ -103,6 +103,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="A-share multi-factor quantile backtest")
     parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
     parser.add_argument("--data-dir", type=Path, default=Path("./data"))
+    parser.add_argument("--symbols-limit", type=int, default=0, help="Limit symbols for debugging")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -115,16 +116,49 @@ def main() -> None:
     config = load_config(args.config)
     logger.info("Loaded config: universe=%s, factors=%s", config.universe, config.factors)
 
-    results, ic_report, output_dir = run_pipeline(
-        config, data_dir=args.data_dir, dry_run=args.dry_run
+    panel = build_dataset(config, data_dir=args.data_dir)
+    if args.symbols_limit > 0:
+        keep = sorted(panel["symbol"].unique())[: args.symbols_limit]
+        panel = panel[panel["symbol"].isin(keep)].reset_index(drop=True)
+        logger.info("Limited to %s symbols", len(keep))
+
+    panel = prepare_factor_panel(config, panel)
+    factor_cols = [col for col in config.factors if col in panel.columns]
+    ic_report = analyze_factors(panel, factor_cols, config.forward_return_col)
+    scored = synthesize(panel, config, ic_summary=ic_report)
+    benchmark = load_benchmark_returns(config, data_dir=args.data_dir)
+    results = run_quantile_backtest(scored, config, benchmark_returns=benchmark)
+
+    if args.dry_run:
+        logger.info("Dry run complete — skipping output write")
+        print("\nIC Summary:")
+        print(ic_report.to_string(index=False))
+        return
+
+    root = Path(config.outputs_dir)
+    latest_dir = root / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    export_ic_series(panel, factor_cols, config.forward_return_col, latest_dir / "ic_series")
+    ic_decay = analyze_ic_decay(panel, factor_cols, config.ic_decay_horizons, price_col="close")
+    ic_decay.to_csv(latest_dir / "ic_decay.csv", index=False)
+
+    run_dir = write_outputs(results, ic_report, config, output_root=root)
+    export_ic_series(panel, factor_cols, config.forward_return_col, run_dir / "ic_series")
+    ic_decay.to_csv(run_dir / "ic_decay.csv", index=False)
+
+    ic_report.to_csv(root / "ic_summary.csv", index=False)
+    write_html_report(
+        results,
+        ic_report,
+        root / "report.html",
+        f"Four-category factors | {config.factors}",
     )
 
     print("\nIC Summary:")
     print(ic_report.to_string(index=False))
     print("\nBacktest Stats:")
     print(results.stats.to_string(index=False))
-    if not args.dry_run:
-        print(f"\nOutputs written to: {output_dir}")
+    print(f"\nOutputs written to: {root}")
 
 
 if __name__ == "__main__":
