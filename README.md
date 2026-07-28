@@ -6,7 +6,7 @@ A 股多因子选股研究项目：从 AKShare 拉取行情，计算因子，做
 
 ## 技术栈
 
-Python · Pandas · Scikit-learn · [**quant-data-kit**](../quant-data-kit) · AKShare · PyArrow · Matplotlib
+Python · Pandas · Scikit-learn · [**quant-data-kit**](https://github.com/PureSaber/quant-data-kit) · AKShare · PyArrow · Matplotlib
 
 ## 四类因子（基本面 / 技术面 / 情感面 / 宏观面）
 
@@ -18,8 +18,12 @@ Python · Pandas · Scikit-learn · [**quant-data-kit**](../quant-data-kit) · A
 | 宏观面 | `industry_rs_20d` | 行业 20 日相对 HS300 强弱 |
 
 ```bash
-# 安装 quant-data-kit 数据层（editable）
-pip install -e ../quant-data-kit[akshare,dev]
+# 安装（quant-data-kit 从 GitHub 拉取 v0.2.0）
+pip install "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@v0.2.0"
+pip install -e ".[dev]"
+
+# 本地开发（与 quant-data-kit 同目录时可用 editable）
+# pip install -e ../quant-data-kit[akshare,dev]
 pip install -e ".[dev]"
 
 # 拉取含另类数据
