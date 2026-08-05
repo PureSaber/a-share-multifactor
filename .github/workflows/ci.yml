@@ -16,16 +16,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout quant-agent
+        uses: actions/checkout@v4
+        with:
+          repository: PureSaber/quant-agent
+          path: quant-agent
+          ref: master
+        continue-on-error: true
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: |
+          pip install -e ".[dev]"
+          if [ -d quant-agent ]; then pip install -e "./quant-agent[dev]"; fi
 
       - name: Ruff check
         run: ruff check src tests scripts
 
       - name: Pytest
         run: pytest -q
+
+      - name: Offline quant-review smoke
+        if: hashFiles('quant-agent/pyproject.toml') != ''
+        run: |
+          quant-review run --project multifactor \
+            --run-dir quant-agent/tests/fixtures/sample_run --offline
