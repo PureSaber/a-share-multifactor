@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import shutil
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from a_share_multifactor.config import AppConfig, load_config
 from a_share_multifactor.data_loader import build_dataset, load_benchmark_returns
@@ -20,15 +24,43 @@ from a_share_multifactor.synthesis import synthesize
 logger = logging.getLogger(__name__)
 
 
+def _write_run_metadata(
+    run_dir: Path,
+    config: AppConfig,
+    config_source: Path | None,
+    run_id: str,
+) -> None:
+    snapshot_path = run_dir / "config.snapshot.yaml"
+    if config_source and config_source.is_file():
+        shutil.copy2(config_source, snapshot_path)
+    else:
+        snapshot_path.write_text(
+            yaml.safe_dump(asdict(config), sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+
+    meta = {
+        "project": "a-share-multifactor",
+        "run_id": run_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "factors": list(config.factors),
+        "universe": config.universe,
+        "outputs_dir": str(config.outputs_dir),
+    }
+    (run_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
 def write_outputs(
     results: BacktestResult,
     ic_report: pd.DataFrame,
     config: AppConfig,
     output_root: Path | None = None,
+    config_source: Path | None = None,
 ) -> Path:
     """Write IC summary and backtest results to outputs directory."""
     root = output_root or Path(config.outputs_dir)
-    run_dir = root / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    run_dir = root / run_id
     latest_dir = root / "latest"
     run_dir.mkdir(parents=True, exist_ok=True)
     latest_dir.mkdir(parents=True, exist_ok=True)
@@ -61,6 +93,9 @@ def write_outputs(
     )
     write_html_report(results, ic_report, latest_dir / "report.html", config_summary)
     write_html_report(results, ic_report, run_dir / "report.html", config_summary)
+
+    _write_run_metadata(run_dir, config, config_source, run_id)
+    _write_run_metadata(latest_dir, config, config_source, run_id)
 
     return run_dir
 
@@ -142,7 +177,9 @@ def main() -> None:
     ic_decay = analyze_ic_decay(panel, factor_cols, config.ic_decay_horizons, price_col="close")
     ic_decay.to_csv(latest_dir / "ic_decay.csv", index=False)
 
-    run_dir = write_outputs(results, ic_report, config, output_root=root)
+    run_dir = write_outputs(
+        results, ic_report, config, output_root=root, config_source=args.config
+    )
     export_ic_series(panel, factor_cols, config.forward_return_col, run_dir / "ic_series")
     ic_decay.to_csv(run_dir / "ic_decay.csv", index=False)
 
