@@ -19,6 +19,7 @@ dependencies = [
     "pyarrow>=14.0",
     "matplotlib>=3.8",
     "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@v0.2.0",
+    "quant-factors @ git+https://github.com/PureSaber/quant-factors.git",
 ]
 
 [project.optional-dependencies]
