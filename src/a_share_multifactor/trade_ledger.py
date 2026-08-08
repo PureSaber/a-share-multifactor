@@ -9,6 +9,7 @@ from a_share_multifactor.config import AppConfig
 from a_share_multifactor.quantile_backtest import _assign_quantiles, _return_col
 from a_share_multifactor.trading_costs import (
     HoldingMeta,
+    RetailRebalanceResult,
     _trading_day_index,
     build_symbol_ranks,
     buy_trade_cost,
@@ -45,6 +46,17 @@ def period_start_capitals(
     for ret in clean:
         capitals.append(capitals[-1] * (1 + ret))
     return pd.Series(capitals[:-1], index=clean.index, dtype=float)
+
+
+def _validate_score_return_columns(
+    panel: pd.DataFrame,
+    score_col: str,
+    return_col: str,
+) -> None:
+    if score_col not in panel.columns:
+        raise ValueError(f"Score column not found: {score_col}")
+    if return_col not in panel.columns:
+        raise ValueError(f"Return column not found: {return_col}")
 
 
 def _close_retail_position(
@@ -93,6 +105,150 @@ def _close_retail_position(
     )
 
 
+def _process_retail_trades(
+    result: RetailRebalanceResult,
+    open_positions: dict[str, dict[str, object]],
+    rows: list[dict[str, object]],
+    close_date: pd.Timestamp,
+    names: dict[str, str],
+    long_q: int,
+) -> None:
+    for sell in result.sells:
+        pos = open_positions.pop(sell.symbol, None)
+        if pos is None:
+            continue
+        _close_retail_position(
+            rows,
+            sell.symbol,
+            pos,
+            close_date,
+            sell.price,
+            sell.cost,
+            names,
+            long_q,
+            exit_reason=sell.exit_reason,
+        )
+
+    for buy in result.buys:
+        open_positions[buy.symbol] = {
+            "open_date": close_date,
+            "shares": buy.shares,
+            "open_price": buy.price,
+            "buy_cost": buy.cost,
+        }
+
+
+def _append_open_position_row(
+    rows: list[dict[str, object]],
+    symbol: str,
+    pos: dict[str, object],
+    close_date: pd.Timestamp | None,
+    close_price: float | None,
+    sell_cost: float,
+    names: dict[str, str],
+    long_q: int,
+    exit_reason: str = "",
+) -> None:
+    open_date = pos["open_date"]
+    shares = int(pos["shares"])
+    open_price = float(pos["open_price"])
+    buy_cost = float(pos["buy_cost"])
+    notional = shares * open_price
+    if close_price is not None:
+        gross_pnl = shares * (close_price - open_price)
+        net_pnl = gross_pnl - buy_cost - sell_cost
+        period_return = close_price / open_price - 1.0 if open_price > 0 else 0.0
+        holding_days = (close_date - open_date).days if close_date is not None else None
+    else:
+        gross_pnl = 0.0
+        net_pnl = -buy_cost
+        period_return = 0.0
+        holding_days = None
+
+    row: dict[str, object] = {
+        "open_date": open_date,
+        "close_date": close_date,
+        "symbol": symbol,
+        "name": names.get(symbol, symbol),
+        "side": "long",
+        "quantile": long_q,
+        "action_open": "buy",
+        "action_close": "sell" if close_date is not None else None,
+        "open_price": round(open_price, 4),
+        "close_price": round(close_price, 4) if close_price is not None else None,
+        "capital_allocated": round(notional + buy_cost, 2),
+        "shares": shares,
+        "holding_days": holding_days,
+        "period_return": round(period_return, 6),
+        "buy_cost": round(buy_cost, 2),
+        "sell_cost": round(sell_cost, 2),
+        "pnl": round(gross_pnl, 2),
+        "net_pnl": round(net_pnl, 2),
+    }
+    if exit_reason:
+        row["exit_reason"] = exit_reason
+    rows.append(row)
+
+
+def _flush_open_positions(
+    rows: list[dict[str, object]],
+    open_positions: dict[str, dict[str, object]],
+    panel: pd.DataFrame,
+    last_date: pd.Timestamp | None,
+    price_col: str,
+    names: dict[str, str],
+    long_q: int,
+    config: AppConfig,
+    exit_reason: str = "",
+) -> None:
+    for symbol, pos in open_positions.items():
+        close_date = None
+        close_price = None
+        sell_cost = 0.0
+        if last_date is not None:
+            close_row = panel[
+                (panel["date"] == last_date) & (panel["symbol"].astype(str) == symbol)
+            ]
+            if not close_row.empty:
+                close_date = last_date
+                close_price = float(close_row.iloc[0][price_col])
+                sell_cost = sell_trade_cost(int(pos["shares"]) * close_price, config.costs)
+
+        _append_open_position_row(
+            rows,
+            symbol,
+            pos,
+            close_date,
+            close_price,
+            sell_cost,
+            names,
+            long_q,
+            exit_reason=exit_reason,
+        )
+
+
+def _prepare_scored_longs_day(
+    panel: pd.DataFrame,
+    open_date: pd.Timestamp,
+    score_col: str,
+    config: AppConfig,
+    long_q: int,
+    price_col: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    day = panel[panel["date"] == open_date].copy()
+    if day.empty:
+        return day, day
+
+    day["quantile"] = _assign_quantiles(day[score_col], config.quantiles)
+    day = day.drop_duplicates(subset=["symbol"])
+    day = day.dropna(subset=["quantile", price_col])
+    if day.empty:
+        return day, day
+
+    longs = day[day["quantile"] == float(long_q)]
+    return day, longs
+
+
 def _build_retail_long_ledger(
     panel: pd.DataFrame,
     config: AppConfig,
@@ -108,21 +264,13 @@ def _build_retail_long_ledger(
     holdings: dict[str, int] = {}
     open_positions: dict[str, dict[str, object]] = {}
 
-    for i, open_date in enumerate(rebalance_idx):
+    for open_date in rebalance_idx:
         if open_date not in period_start_capital.index:
             continue
 
-        day = panel[panel["date"] == open_date].copy()
-        if day.empty:
-            continue
-
-        day["quantile"] = _assign_quantiles(day[score_col], config.quantiles)
-        day = day.drop_duplicates(subset=["symbol"])
-        day = day.dropna(subset=["quantile", price_col])
-        if day.empty:
-            continue
-
-        longs = day[day["quantile"] == float(long_q)]
+        day, longs = _prepare_scored_longs_day(
+            panel, open_date, score_col, config, long_q, price_col
+        )
         if longs.empty:
             continue
 
@@ -141,84 +289,12 @@ def _build_retail_long_ledger(
         result = retail_rebalance(cash, holdings, prices, target_symbols, config.costs)
         cash = result.cash
         holdings = result.holdings
-
-        for sell in result.sells:
-            pos = open_positions.pop(sell.symbol, None)
-            if pos is None:
-                continue
-            _close_retail_position(
-                rows,
-                sell.symbol,
-                pos,
-                open_date,
-                sell.price,
-                sell.cost,
-                names,
-                long_q,
-                exit_reason=sell.exit_reason,
-            )
-
-        for buy in result.buys:
-            open_positions[buy.symbol] = {
-                "open_date": open_date,
-                "shares": buy.shares,
-                "open_price": buy.price,
-                "buy_cost": buy.cost,
-            }
+        _process_retail_trades(result, open_positions, rows, open_date, names, long_q)
 
     last_date = rebalance_idx[-1] if rebalance_idx else None
-    for symbol, pos in open_positions.items():
-        close_date = None
-        close_price = None
-        sell_cost = 0.0
-        if last_date is not None:
-            close_row = panel[
-                (panel["date"] == last_date) & (panel["symbol"].astype(str) == symbol)
-            ]
-            if not close_row.empty:
-                close_date = last_date
-                close_price = float(close_row.iloc[0][price_col])
-                sell_cost = sell_trade_cost(pos["shares"] * close_price, config.costs)
-
-        open_date = pos["open_date"]
-        shares = int(pos["shares"])
-        open_price = float(pos["open_price"])
-        buy_cost = float(pos["buy_cost"])
-        notional = shares * open_price
-        if close_price is not None:
-            gross_pnl = shares * (close_price - open_price)
-            net_pnl = gross_pnl - buy_cost - sell_cost
-            period_return = close_price / open_price - 1.0 if open_price > 0 else 0.0
-            holding_days = (close_date - open_date).days if close_date is not None else None
-        else:
-            gross_pnl = 0.0
-            net_pnl = -buy_cost
-            period_return = 0.0
-            holding_days = None
-
-        rows.append(
-            {
-                "open_date": open_date,
-                "close_date": close_date,
-                "symbol": symbol,
-                "name": names.get(symbol, symbol),
-                "side": "long",
-                "quantile": long_q,
-                "action_open": "buy",
-                "action_close": "sell" if close_date is not None else None,
-                "open_price": round(open_price, 4),
-                "close_price": round(close_price, 4) if close_price is not None else None,
-                "capital_allocated": round(notional + buy_cost, 2),
-                "shares": shares,
-                "holding_days": holding_days,
-                "period_return": round(period_return, 6),
-                "buy_cost": round(buy_cost, 2),
-                "sell_cost": round(sell_cost, 2),
-                "pnl": round(gross_pnl, 2),
-                "net_pnl": round(net_pnl, 2),
-            }
-        )
-
+    _flush_open_positions(
+        rows, open_positions, panel, last_date, price_col, names, long_q, config
+    )
     return pd.DataFrame(rows)
 
 
@@ -293,87 +369,21 @@ def _build_retail_daily_ledger(
         )
         cash = result.cash
         holdings = result.holdings
-
-        for sell in result.sells:
-            pos = open_positions.pop(sell.symbol, None)
-            if pos is None:
-                continue
-            _close_retail_position(
-                rows,
-                sell.symbol,
-                pos,
-                trade_date,
-                sell.price,
-                sell.cost,
-                names,
-                long_q,
-                exit_reason=sell.exit_reason,
-            )
-
-        for buy in result.buys:
-            open_positions[buy.symbol] = {
-                "open_date": trade_date,
-                "shares": buy.shares,
-                "open_price": buy.price,
-                "buy_cost": buy.cost,
-            }
-
+        _process_retail_trades(result, open_positions, rows, trade_date, names, long_q)
         prev_prices = prices
 
     last_date = trade_idx[-1] if len(trade_idx) else None
-    for symbol, pos in open_positions.items():
-        close_date = None
-        close_price = None
-        sell_cost = 0.0
-        if last_date is not None:
-            close_row = panel[
-                (panel["date"] == last_date) & (panel["symbol"].astype(str) == symbol)
-            ]
-            if not close_row.empty:
-                close_date = last_date
-                close_price = float(close_row.iloc[0][price_col])
-                sell_cost = sell_trade_cost(int(pos["shares"]) * close_price, config.costs)
-
-        open_date = pos["open_date"]
-        shares = int(pos["shares"])
-        open_price = float(pos["open_price"])
-        buy_cost = float(pos["buy_cost"])
-        notional = shares * open_price
-        if close_price is not None:
-            gross_pnl = shares * (close_price - open_price)
-            net_pnl = gross_pnl - buy_cost - sell_cost
-            period_return = close_price / open_price - 1.0 if open_price > 0 else 0.0
-            holding_days = (close_date - open_date).days if close_date is not None else None
-        else:
-            gross_pnl = 0.0
-            net_pnl = -buy_cost
-            period_return = 0.0
-            holding_days = None
-
-        rows.append(
-            {
-                "open_date": open_date,
-                "close_date": close_date,
-                "symbol": symbol,
-                "name": names.get(symbol, symbol),
-                "side": "long",
-                "quantile": long_q,
-                "action_open": "buy",
-                "action_close": "sell" if close_date is not None else None,
-                "open_price": round(open_price, 4),
-                "close_price": round(close_price, 4) if close_price is not None else None,
-                "capital_allocated": round(notional + buy_cost, 2),
-                "shares": shares,
-                "holding_days": holding_days,
-                "period_return": round(period_return, 6),
-                "buy_cost": round(buy_cost, 2),
-                "sell_cost": round(sell_cost, 2),
-                "pnl": round(gross_pnl, 2),
-                "net_pnl": round(net_pnl, 2),
-                "exit_reason": "open",
-            }
-        )
-
+    _flush_open_positions(
+        rows,
+        open_positions,
+        panel,
+        last_date,
+        price_col,
+        names,
+        long_q,
+        config,
+        exit_reason="open",
+    )
     return pd.DataFrame(rows)
 
 
@@ -394,12 +404,8 @@ def build_trade_ledger(
     long_only=False: dollar-neutral long-short (Q5 long, Q1 short, 50/50 capital).
     long_only=True: full capital equally allocated to top quantile (Q5) only.
     """
-    if score_col not in panel.columns:
-        raise ValueError(f"Score column not found: {score_col}")
-
     return_col = _return_col(config)
-    if return_col not in panel.columns:
-        raise ValueError(f"Return column not found: {return_col}")
+    _validate_score_return_columns(panel, score_col, return_col)
 
     long_q = long_quantile if long_quantile is not None else config.quantiles
     names = name_map or {}

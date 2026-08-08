@@ -102,83 +102,124 @@ def _compute_leg_turnover(prev_symbols: set[str], curr_symbols: set[str]) -> flo
     return 1.0 - overlap / max(len(curr_symbols), len(prev_symbols))
 
 
-def run_long_only_backtest(
+def _empty_backtest_result() -> BacktestResult:
+    empty = pd.DataFrame()
+    return BacktestResult(
+        quantile_returns=empty,
+        cumulative_returns=empty,
+        long_short=pd.Series(dtype=float),
+        stats=empty,
+    )
+
+
+def _periods_per_year(config: AppConfig, *, daily: bool = False) -> int:
+    if daily:
+        return 252
+    return 12 if config.rebalance_freq == "monthly" else 252
+
+
+def _portfolio_stats_row(
+    series: pd.Series,
+    periods_per_year: int,
+    portfolio: str,
+) -> dict[str, float | str]:
+    mean_ret = float(series.mean())
+    vol = float(series.std(ddof=0))
+    ann_return = (1 + mean_ret) ** periods_per_year - 1
+    ann_vol = vol * np.sqrt(periods_per_year) if vol > 0 else float("nan")
+    sharpe = ann_return / ann_vol if ann_vol and not np.isnan(ann_vol) else float("nan")
+    return {
+        "portfolio": portfolio,
+        "mean_return": mean_ret,
+        "ann_return": ann_return,
+        "ann_vol": ann_vol,
+        "sharpe": sharpe,
+    }
+
+
+def _build_excess_returns(
+    quantile_returns: pd.DataFrame,
+    benchmark: pd.Series,
+) -> pd.DataFrame:
+    excess = pd.DataFrame(index=quantile_returns.index)
+    if benchmark.empty:
+        return excess
+    aligned_benchmark = benchmark.reindex(quantile_returns.index).fillna(0.0)
+    for col in quantile_returns.columns:
+        excess[col] = quantile_returns[col] - aligned_benchmark
+    return excess
+
+
+def _prepare_rebalance_day(
+    panel: pd.DataFrame,
+    rebalance_date: pd.Timestamp,
+    score_col: str,
+    return_col: str,
+    config: AppConfig,
+) -> pd.DataFrame:
+    day = panel[panel["date"] == rebalance_date].copy()
+    if day.empty:
+        return day
+    day["quantile"] = _assign_quantiles(day[score_col], config.quantiles)
+    return day.dropna(subset=["quantile", return_col])
+
+
+def _long_only_retail_daily(
     panel: pd.DataFrame,
     config: AppConfig,
-    score_col: str = "composite_score",
-    return_col: str | None = None,
-    benchmark_returns: pd.Series | None = None,
-    long_quantile: int | None = None,
-    trade_start_date: str | pd.Timestamp | None = None,
+    score_col: str,
+    long_q: int,
+    q_col: str,
+    benchmark_returns: pd.Series | None,
+    trade_start_date: str | pd.Timestamp | None,
 ) -> BacktestResult:
-    """Run long-only backtest on the top quantile (default Q5)."""
-    return_col = return_col or _return_col(config)
-    long_q = long_quantile if long_quantile is not None else config.quantiles
-    q_col = f"Q{long_q}"
+    trade_idx = trade_schedule_dates(
+        panel["date"],
+        config.rebalance_freq,
+        config.costs.retail_mode,
+        config.costs.trade_freq,
+    )
+    if trade_start_date is not None:
+        trade_idx = trade_idx[trade_idx >= pd.Timestamp(trade_start_date)]
+    portfolio = simulate_daily_retail_portfolio(
+        panel,
+        config,
+        score_col,
+        long_q,
+        trade_idx,
+    )
+    if portfolio.empty:
+        return _empty_backtest_result()
 
-    if score_col not in panel.columns:
-        raise ValueError(f"Score column not found: {score_col}")
+    quantile_returns = pd.DataFrame({q_col: portfolio})
+    cumulative_returns = (1 + quantile_returns).cumprod()
+    periods_per_year = _periods_per_year(config, daily=True)
+    stats_rows: list[dict[str, float | str]] = []
+    series = portfolio.dropna()
+    if not series.empty:
+        stats_rows.append(_portfolio_stats_row(series, periods_per_year, "long_only"))
 
-    if config.costs.retail_mode and config.costs.trade_freq in {"daily", "weekly"}:
-        trade_idx = trade_schedule_dates(
-            panel["date"],
-            config.rebalance_freq,
-            config.costs.retail_mode,
-            config.costs.trade_freq,
-        )
-        if trade_start_date is not None:
-            trade_idx = trade_idx[trade_idx >= pd.Timestamp(trade_start_date)]
-        portfolio = simulate_daily_retail_portfolio(
-            panel,
-            config,
-            score_col,
-            long_q,
-            trade_idx,
-        )
-        if portfolio.empty:
-            empty = pd.DataFrame()
-            return BacktestResult(
-                quantile_returns=empty,
-                cumulative_returns=empty,
-                long_short=pd.Series(dtype=float),
-                stats=empty,
-            )
+    benchmark = benchmark_returns if benchmark_returns is not None else pd.Series(dtype=float)
+    return BacktestResult(
+        quantile_returns=quantile_returns,
+        cumulative_returns=cumulative_returns,
+        long_short=portfolio,
+        stats=pd.DataFrame(stats_rows),
+        turnover=pd.DataFrame(),
+        benchmark_returns=benchmark,
+        excess_returns=pd.DataFrame(),
+    )
 
-        quantile_returns = pd.DataFrame({q_col: portfolio})
-        cumulative_returns = (1 + quantile_returns).cumprod()
-        periods_per_year = 252
-        stats_rows: list[dict[str, float | str]] = []
-        series = portfolio.dropna()
-        if not series.empty:
-            mean_ret = float(series.mean())
-            vol = float(series.std(ddof=0))
-            ann_return = (1 + mean_ret) ** periods_per_year - 1
-            ann_vol = vol * np.sqrt(periods_per_year) if vol > 0 else float("nan")
-            sharpe = ann_return / ann_vol if ann_vol and not np.isnan(ann_vol) else float("nan")
-            stats_rows.append(
-                {
-                    "portfolio": "long_only",
-                    "mean_return": mean_ret,
-                    "ann_return": ann_return,
-                    "ann_vol": ann_vol,
-                    "sharpe": sharpe,
-                }
-            )
 
-        benchmark = benchmark_returns if benchmark_returns is not None else pd.Series(dtype=float)
-        return BacktestResult(
-            quantile_returns=quantile_returns,
-            cumulative_returns=cumulative_returns,
-            long_short=portfolio,
-            stats=pd.DataFrame(stats_rows),
-            turnover=pd.DataFrame(),
-            benchmark_returns=benchmark,
-            excess_returns=pd.DataFrame(),
-        )
-
-    if return_col not in panel.columns:
-        raise ValueError(f"Return column not found: {return_col}")
-
+def _long_only_rebalance_loop(
+    panel: pd.DataFrame,
+    config: AppConfig,
+    score_col: str,
+    return_col: str,
+    long_q: int,
+    q_col: str,
+    benchmark_returns: pd.Series | None,
+) -> BacktestResult:
     rebalance_idx = rebalance_dates(panel["date"], config.rebalance_freq)
     period_returns: list[dict[str, float | pd.Timestamp]] = []
     turnover_rows: list[dict[str, float | pd.Timestamp]] = []
@@ -189,11 +230,7 @@ def run_long_only_backtest(
     holdings: dict[str, int] = {}
 
     for rebalance_date in rebalance_idx:
-        day = panel[panel["date"] == rebalance_date].copy()
-        if day.empty:
-            continue
-        day["quantile"] = _assign_quantiles(day[score_col], config.quantiles)
-        day = day.dropna(subset=["quantile", return_col])
+        day = _prepare_rebalance_day(panel, rebalance_date, score_col, return_col, config)
         if day.empty:
             continue
 
@@ -246,13 +283,7 @@ def run_long_only_backtest(
         prev_long = curr_long
 
     if not period_returns:
-        empty = pd.DataFrame()
-        return BacktestResult(
-            quantile_returns=empty,
-            cumulative_returns=empty,
-            long_short=pd.Series(dtype=float),
-            stats=empty,
-        )
+        return _empty_backtest_result()
 
     quantile_returns = pd.DataFrame(period_returns).set_index("date").sort_index()
     cumulative_returns = (1 + quantile_returns).cumprod()
@@ -260,44 +291,19 @@ def run_long_only_backtest(
     portfolio = quantile_returns[q_col]
 
     benchmark = benchmark_returns if benchmark_returns is not None else pd.Series(dtype=float)
-    excess = pd.DataFrame(index=quantile_returns.index)
+    excess = _build_excess_returns(quantile_returns, benchmark)
     if not benchmark.empty:
-        aligned_benchmark = benchmark.reindex(quantile_returns.index).fillna(0.0)
-        excess[q_col] = portfolio - aligned_benchmark
+        excess = excess[[q_col]]
 
+    periods_per_year = _periods_per_year(config)
     stats_rows: list[dict[str, float | str]] = []
-    periods_per_year = 12 if config.rebalance_freq == "monthly" else 252
     series = portfolio.dropna()
     if not series.empty:
-        mean_ret = float(series.mean())
-        vol = float(series.std(ddof=0))
-        ann_return = (1 + mean_ret) ** periods_per_year - 1
-        ann_vol = vol * np.sqrt(periods_per_year) if vol > 0 else float("nan")
-        sharpe = ann_return / ann_vol if ann_vol and not np.isnan(ann_vol) else float("nan")
-        stats_rows.append(
-            {
-                "portfolio": "long_only",
-                "mean_return": mean_ret,
-                "ann_return": ann_return,
-                "ann_vol": ann_vol,
-                "sharpe": sharpe,
-            }
-        )
+        stats_rows.append(_portfolio_stats_row(series, periods_per_year, "long_only"))
         if not benchmark.empty:
             excess_series = portfolio - benchmark.reindex(portfolio.index).fillna(0.0)
-            mean_ret = float(excess_series.mean())
-            vol = float(excess_series.std(ddof=0))
-            ann_return = (1 + mean_ret) ** periods_per_year - 1
-            ann_vol = vol * np.sqrt(periods_per_year) if vol > 0 else float("nan")
-            sharpe = ann_return / ann_vol if ann_vol and not np.isnan(ann_vol) else float("nan")
             stats_rows.append(
-                {
-                    "portfolio": "long_only_excess",
-                    "mean_return": mean_ret,
-                    "ann_return": ann_return,
-                    "ann_vol": ann_vol,
-                    "sharpe": sharpe,
-                }
+                _portfolio_stats_row(excess_series, periods_per_year, "long_only_excess")
             )
 
     return BacktestResult(
@@ -311,20 +317,54 @@ def run_long_only_backtest(
     )
 
 
-def run_quantile_backtest(
+def run_long_only_backtest(
     panel: pd.DataFrame,
     config: AppConfig,
     score_col: str = "composite_score",
     return_col: str | None = None,
     benchmark_returns: pd.Series | None = None,
+    long_quantile: int | None = None,
+    trade_start_date: str | pd.Timestamp | None = None,
 ) -> BacktestResult:
-    """Run cross-sectional quantile backtest on composite score."""
+    """Run long-only backtest on the top quantile (default Q5)."""
     return_col = return_col or _return_col(config)
+    long_q = long_quantile if long_quantile is not None else config.quantiles
+    q_col = f"Q{long_q}"
+
     if score_col not in panel.columns:
         raise ValueError(f"Score column not found: {score_col}")
+
+    if config.costs.retail_mode and config.costs.trade_freq in {"daily", "weekly"}:
+        return _long_only_retail_daily(
+            panel,
+            config,
+            score_col,
+            long_q,
+            q_col,
+            benchmark_returns,
+            trade_start_date,
+        )
+
     if return_col not in panel.columns:
         raise ValueError(f"Return column not found: {return_col}")
 
+    return _long_only_rebalance_loop(
+        panel,
+        config,
+        score_col,
+        return_col,
+        long_q,
+        q_col,
+        benchmark_returns,
+    )
+
+
+def _quantile_rebalance_loop(
+    panel: pd.DataFrame,
+    config: AppConfig,
+    score_col: str,
+    return_col: str,
+) -> tuple[list[dict[str, float | pd.Timestamp]], list[dict[str, float | pd.Timestamp]]]:
     rebalance_idx = rebalance_dates(panel["date"], config.rebalance_freq)
     period_returns: list[dict[str, float | pd.Timestamp]] = []
     turnover_rows: list[dict[str, float | pd.Timestamp]] = []
@@ -332,11 +372,7 @@ def run_quantile_backtest(
     portfolio_value = float(config.costs.initial_capital)
 
     for rebalance_date in rebalance_idx:
-        day = panel[panel["date"] == rebalance_date].copy()
-        if day.empty:
-            continue
-        day["quantile"] = _assign_quantiles(day[score_col], config.quantiles)
-        day = day.dropna(subset=["quantile", return_col])
+        day = _prepare_rebalance_day(panel, rebalance_date, score_col, return_col, config)
         if day.empty:
             continue
 
@@ -366,14 +402,55 @@ def run_quantile_backtest(
         period_returns.append(row)
         prev_holdings = curr_holdings
 
-    if not period_returns:
-        empty = pd.DataFrame()
-        return BacktestResult(
-            quantile_returns=empty,
-            cumulative_returns=empty,
-            long_short=pd.Series(dtype=float),
-            stats=empty,
+    return period_returns, turnover_rows
+
+
+def _quantile_backtest_stats(
+    quantile_returns: pd.DataFrame,
+    long_short: pd.Series,
+    benchmark: pd.Series,
+    config: AppConfig,
+) -> pd.DataFrame:
+    stats_rows: list[dict[str, float | str]] = []
+    periods_per_year = _periods_per_year(config)
+
+    for col in quantile_returns.columns:
+        series = quantile_returns[col].dropna()
+        if series.empty:
+            continue
+        stats_rows.append(_portfolio_stats_row(series, periods_per_year, col))
+
+    if not long_short.empty:
+        stats_rows.append(_portfolio_stats_row(long_short, periods_per_year, "long_short"))
+
+    if not benchmark.empty and not long_short.empty:
+        aligned_benchmark = benchmark.reindex(long_short.index).fillna(0.0)
+        excess_ls = long_short - aligned_benchmark
+        stats_rows.append(
+            _portfolio_stats_row(excess_ls, periods_per_year, "long_short_excess")
         )
+
+    return pd.DataFrame(stats_rows)
+
+
+def run_quantile_backtest(
+    panel: pd.DataFrame,
+    config: AppConfig,
+    score_col: str = "composite_score",
+    return_col: str | None = None,
+    benchmark_returns: pd.Series | None = None,
+) -> BacktestResult:
+    """Run cross-sectional quantile backtest on composite score."""
+    return_col = return_col or _return_col(config)
+    if score_col not in panel.columns:
+        raise ValueError(f"Score column not found: {score_col}")
+    if return_col not in panel.columns:
+        raise ValueError(f"Return column not found: {return_col}")
+
+    period_returns, turnover_rows = _quantile_rebalance_loop(panel, config, score_col, return_col)
+
+    if not period_returns:
+        return _empty_backtest_result()
 
     quantile_returns = pd.DataFrame(period_returns).set_index("date").sort_index()
     cumulative_returns = (1 + quantile_returns).cumprod()
@@ -385,68 +462,9 @@ def run_quantile_backtest(
         long_short = pd.Series(dtype=float)
 
     benchmark = benchmark_returns if benchmark_returns is not None else pd.Series(dtype=float)
-    excess = pd.DataFrame(index=quantile_returns.index)
-    if not benchmark.empty:
-        aligned_benchmark = benchmark.reindex(quantile_returns.index).fillna(0.0)
-        for col in quantile_returns.columns:
-            excess[col] = quantile_returns[col] - aligned_benchmark
+    excess = _build_excess_returns(quantile_returns, benchmark)
+    stats = _quantile_backtest_stats(quantile_returns, long_short, benchmark, config)
 
-    stats_rows: list[dict[str, float | str]] = []
-    periods_per_year = 12 if config.rebalance_freq == "monthly" else 252
-    for col in quantile_returns.columns:
-        series = quantile_returns[col].dropna()
-        if series.empty:
-            continue
-        mean_ret = float(series.mean())
-        vol = float(series.std(ddof=0))
-        ann_return = (1 + mean_ret) ** periods_per_year - 1
-        ann_vol = vol * np.sqrt(periods_per_year) if vol > 0 else float("nan")
-        sharpe = ann_return / ann_vol if ann_vol and not np.isnan(ann_vol) else float("nan")
-        stats_rows.append(
-            {
-                "portfolio": col,
-                "mean_return": mean_ret,
-                "ann_return": ann_return,
-                "ann_vol": ann_vol,
-                "sharpe": sharpe,
-            }
-        )
-
-    if not long_short.empty:
-        mean_ret = float(long_short.mean())
-        vol = float(long_short.std(ddof=0))
-        ann_return = (1 + mean_ret) ** periods_per_year - 1
-        ann_vol = vol * np.sqrt(periods_per_year) if vol > 0 else float("nan")
-        sharpe = ann_return / ann_vol if ann_vol and not np.isnan(ann_vol) else float("nan")
-        stats_rows.append(
-            {
-                "portfolio": "long_short",
-                "mean_return": mean_ret,
-                "ann_return": ann_return,
-                "ann_vol": ann_vol,
-                "sharpe": sharpe,
-            }
-        )
-
-    if not benchmark.empty and not long_short.empty:
-        aligned_benchmark = benchmark.reindex(long_short.index).fillna(0.0)
-        excess_ls = long_short - aligned_benchmark
-        mean_ret = float(excess_ls.mean())
-        vol = float(excess_ls.std(ddof=0))
-        ann_return = (1 + mean_ret) ** periods_per_year - 1
-        ann_vol = vol * np.sqrt(periods_per_year) if vol > 0 else float("nan")
-        sharpe = ann_return / ann_vol if ann_vol and not np.isnan(ann_vol) else float("nan")
-        stats_rows.append(
-            {
-                "portfolio": "long_short_excess",
-                "mean_return": mean_ret,
-                "ann_return": ann_return,
-                "ann_vol": ann_vol,
-                "sharpe": sharpe,
-            }
-        )
-
-    stats = pd.DataFrame(stats_rows)
     return BacktestResult(
         quantile_returns=quantile_returns,
         cumulative_returns=cumulative_returns,

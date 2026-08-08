@@ -1,0 +1,13 @@
+# IC smoke: quant-factors compute columns -> ic_analysis -> outputs/ic_smoke/
+factors:
+  - momentum_20d
+  - reversal_5d
+  - volatility_20d
+  - turnover_20d
+
+forward_return_days: 20
+outputs_dir: outputs/ic_smoke
+
+panel:
+  symbols: ["000001", "000002", "000003", "000004"]
+  periods: 60
