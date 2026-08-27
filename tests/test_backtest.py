@@ -50,6 +50,7 @@ def test_run_pipeline(tmp_path: Path) -> None:
             )
     prices = pd.DataFrame(rows)
     fundamentals = prices[["symbol", "date", "market_cap", "pe_ratio", "pb_ratio"]].copy()
+    fundamentals["available_at"] = fundamentals["date"]
     benchmark = pd.DataFrame(
         {
             "date": dates,

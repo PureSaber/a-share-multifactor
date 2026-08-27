@@ -31,6 +31,7 @@ class DataPaths:
     earnings_forecast: str = "cn_a/alt/earnings_forecast.parquet"
     northbound: str = "cn_a/alt/northbound_holdings.parquet"
     industry_returns: str = "cn_a/alt/industry_returns.parquet"
+    snapshot_root: str = "snapshots"
 
 
 @dataclass
@@ -40,6 +41,18 @@ class FilterConfig:
     min_list_days: int = 60
     pit_fundamentals: bool = True
     fundamental_lag_days: int = 0
+    fundamental_max_age_days: int = 550
+    require_availability_timestamp: bool = True
+
+
+@dataclass
+class ValidationConfig:
+    enabled: bool = False
+    train_size: int = 504
+    test_size: int = 126
+    step_size: int = 126
+    embargo_size: int = 20
+    multiple_testing_alpha: float = 0.05
 
 
 @dataclass
@@ -121,6 +134,7 @@ class AppConfig:
     fetch: FetchConfig = field(default_factory=FetchConfig)
     grid_search: GridSearchConfig = field(default_factory=GridSearchConfig)
     ic_decay_horizons: list[int] = field(default_factory=lambda: [1, 5, 10, 20])
+    validation: ValidationConfig = field(default_factory=ValidationConfig)
 
     @property
     def forward_return_col(self) -> str:
@@ -168,6 +182,7 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
     preprocess_raw = raw.get("preprocess", {})
     synthesis_raw = raw.get("synthesis", {})
     filters_raw = raw.get("filters", {})
+    validation_raw = raw.get("validation", {})
     costs_raw = raw.get("costs", {})
     fetch_raw = raw.get("fetch", {})
     grid_raw = raw.get("grid_search", {})
@@ -204,6 +219,7 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
             industry_returns=data_raw.get(
                 "industry_returns", defaults.data.industry_returns
             ),
+            snapshot_root=data_raw.get("snapshot_root", defaults.data.snapshot_root),
         ),
         filters=FilterConfig(
             use_historical_universe=bool(
@@ -216,6 +232,17 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
             ),
             fundamental_lag_days=int(
                 filters_raw.get("fundamental_lag_days", defaults.filters.fundamental_lag_days)
+            ),
+            fundamental_max_age_days=int(
+                filters_raw.get(
+                    "fundamental_max_age_days", defaults.filters.fundamental_max_age_days
+                )
+            ),
+            require_availability_timestamp=bool(
+                filters_raw.get(
+                    "require_availability_timestamp",
+                    defaults.filters.require_availability_timestamp,
+                )
             ),
         ),
         preprocess=PreprocessConfig(
@@ -290,6 +317,20 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
             ),
         ),
         ic_decay_horizons=list(ic_decay_horizons),
+        validation=ValidationConfig(
+            enabled=bool(validation_raw.get("enabled", defaults.validation.enabled)),
+            train_size=int(validation_raw.get("train_size", defaults.validation.train_size)),
+            test_size=int(validation_raw.get("test_size", defaults.validation.test_size)),
+            step_size=int(validation_raw.get("step_size", defaults.validation.step_size)),
+            embargo_size=int(
+                validation_raw.get("embargo_size", defaults.validation.embargo_size)
+            ),
+            multiple_testing_alpha=float(
+                validation_raw.get(
+                    "multiple_testing_alpha", defaults.validation.multiple_testing_alpha
+                )
+            ),
+        ),
     )
 
 
