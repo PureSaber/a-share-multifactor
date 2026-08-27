@@ -18,6 +18,7 @@ from quant_data_kit.providers.universe import (
     fetch_hs300_constituents,
     fetch_hs300_constituents_history,
 )
+from quant_data_kit.snapshots import create_snapshot
 from quant_data_kit.storage import (
     cache_covers_range,
     incremental_start_date,
@@ -26,6 +27,8 @@ from quant_data_kit.storage import (
     save_parquet,
     should_refresh_cache,
 )
+from quant_data_kit.temporal import audit_point_in_time, point_in_time_join
+from quant_data_kit.validate import validate_price_frame
 
 from a_share_multifactor.config import AppConfig
 
@@ -54,6 +57,8 @@ def merge_price_fundamentals(
     fundamentals: pd.DataFrame,
     pit: bool = True,
     fundamental_lag_days: int = 0,
+    max_age_days: int | None = None,
+    require_availability_timestamp: bool = True,
 ) -> pd.DataFrame:
     """Merge price and fundamentals; use merge_asof for point-in-time when pit=True."""
     if fundamentals.empty:
@@ -61,44 +66,43 @@ def merge_price_fundamentals(
 
     fund = fundamentals.copy()
     fund["date"] = pd.to_datetime(fund["date"]).dt.normalize()
-    if "report_date" in fund.columns:
-        fund["asof_date"] = pd.to_datetime(fund["report_date"]).dt.normalize()
-    else:
-        fund["asof_date"] = fund["date"]
+    if "available_at" not in fund.columns:
+        if require_availability_timestamp:
+            raise ValueError(
+                "PIT fundamentals require available_at; refresh the cache with quant-data-kit>=0.3"
+            )
+        fund["available_at"] = fund["date"]
+    fund["available_at"] = pd.to_datetime(fund["available_at"]).dt.normalize()
     if fundamental_lag_days > 0:
-        fund["asof_date"] = fund["asof_date"] + pd.Timedelta(days=fundamental_lag_days)
+        fund["available_at"] = fund["available_at"] + pd.Timedelta(days=fundamental_lag_days)
 
     if not pit:
         merged = prices.merge(
-            fund.drop(columns=["asof_date"], errors="ignore"),
+            fund,
             on=["symbol", "date"],
             how="left",
         )
         return merged.sort_values(["date", "symbol"]).reset_index(drop=True)
 
-    price_df = prices.copy()
-    price_df["date"] = pd.to_datetime(price_df["date"]).dt.normalize()
-    fund_cols = [c for c in fund.columns if c not in {"symbol", "date", "asof_date", "report_date"}]
-
-    merged_parts: list[pd.DataFrame] = []
-    for symbol, price_group in price_df.groupby("symbol", sort=False):
-        fund_group = fund[fund["symbol"] == symbol][["asof_date"] + fund_cols].sort_values(
-            "asof_date"
-        )
-        if fund_group.empty:
-            merged_parts.append(price_group)
-            continue
-        part = pd.merge_asof(
-            price_group.sort_values("date"),
-            fund_group,
-            left_on="date",
-            right_on="asof_date",
-            direction="backward",
-        )
-        merged_parts.append(part.drop(columns=["asof_date"], errors="ignore"))
-
-    merged = pd.concat(merged_parts, ignore_index=True)
-    return merged.sort_values(["date", "symbol"]).reset_index(drop=True)
+    fact_cols = [
+        column
+        for column in fund.columns
+        if column not in {"symbol", "date", "available_at"}
+    ]
+    merged = point_in_time_join(
+        prices,
+        fund,
+        observation_time="date",
+        available_time="available_at",
+        by=("symbol",),
+        fact_columns=fact_cols,
+        max_age=pd.Timedelta(days=max_age_days) if max_age_days else None,
+    )
+    audit_point_in_time(
+        merged,
+        max_age=pd.Timedelta(days=max_age_days) if max_age_days else None,
+    )
+    return merged
 
 
 def apply_universe_filter(panel: pd.DataFrame, universe: pd.DataFrame) -> pd.DataFrame:
@@ -160,8 +164,20 @@ def build_dataset(
     fundamentals_path = root / config.data.fundamentals
     universe_path = root / config.data.universe
 
+    universe = pd.DataFrame()
+    if config.filters.use_historical_universe:
+        if force_refresh or not universe_path.exists():
+            universe = fetch_hs300_constituents_history(config.start_date, config.end_date)
+            save_parquet(universe, universe_path)
+        else:
+            universe = load_parquet(universe_path)
+
     if force_refresh or not price_path.exists():
-        symbols = fetch_hs300_constituents()
+        symbols = (
+            sorted(universe["symbol"].astype(str).unique().tolist())
+            if not universe.empty
+            else fetch_hs300_constituents()
+        )
         prices = fetch_daily_prices(
             symbols,
             config.start_date,
@@ -173,6 +189,7 @@ def build_dataset(
         save_parquet(prices, price_path)
     else:
         prices = load_parquet(price_path)
+    price_quality = validate_price_frame(prices)
 
     if force_refresh or not fundamentals_path.exists():
         symbols = sorted(prices["symbol"].unique().tolist())
@@ -193,17 +210,14 @@ def build_dataset(
         fundamentals,
         pit=config.filters.pit_fundamentals,
         fundamental_lag_days=config.filters.fundamental_lag_days,
+        max_age_days=config.filters.fundamental_max_age_days,
+        require_availability_timestamp=config.filters.require_availability_timestamp,
     )
     start = parse_date(config.start_date)
     end = parse_date(config.end_date)
     panel = panel[(panel["date"] >= start) & (panel["date"] <= end)]
 
     if config.filters.use_historical_universe:
-        if force_refresh or not universe_path.exists():
-            universe = fetch_hs300_constituents_history(config.start_date, config.end_date)
-            save_parquet(universe, universe_path)
-        else:
-            universe = load_parquet(universe_path)
         panel = apply_universe_filter(panel, universe)
 
     panel = apply_tradability_filters(panel, config)
@@ -211,7 +225,43 @@ def build_dataset(
     if include_alt:
         panel = _merge_alt_data(panel, config, root)
 
-    return panel.reset_index(drop=True)
+    snapshot_root = root / config.data.snapshot_root
+    price_snapshot = create_snapshot(
+        prices,
+        snapshot_root,
+        dataset="cn_a_prices",
+        source="akshare",
+        as_of=config.end_date,
+        adjustment="qfq",
+        query={"start_date": config.start_date, "end_date": config.end_date},
+    )
+    fundamental_snapshot = create_snapshot(
+        fundamentals,
+        snapshot_root,
+        dataset="cn_a_fundamentals",
+        source="akshare",
+        as_of=config.end_date,
+        query={"start_date": config.start_date, "end_date": config.end_date},
+    )
+    universe_snapshot = None
+    if not universe.empty:
+        universe_snapshot = create_snapshot(
+            universe,
+            snapshot_root,
+            dataset="hs300_historical_universe",
+            source="akshare-cni",
+            as_of=config.end_date,
+            query={"start_date": config.start_date, "end_date": config.end_date},
+        )
+    result = panel.reset_index(drop=True)
+    result.attrs["dataset_snapshots"] = {
+        "prices": price_snapshot.snapshot_id,
+        "fundamentals": fundamental_snapshot.snapshot_id,
+    }
+    if universe_snapshot is not None:
+        result.attrs["dataset_snapshots"]["universe"] = universe_snapshot.snapshot_id
+    result.attrs["data_quality"] = price_quality
+    return result
 
 
 def load_benchmark_returns(

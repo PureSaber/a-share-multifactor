@@ -18,8 +18,8 @@ Python · Pandas · Scikit-learn · [**quant-data-kit**](https://github.com/Pure
 | 宏观面 | `industry_rs_20d` | 行业 20 日相对 HS300 强弱 |
 
 ```bash
-# 安装（quant-data-kit 从 GitHub 拉取 v0.2.0）
-pip install "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@v0.2.0"
+# 安装（内部依赖由pyproject.toml锁定tag）
+pip install "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@v0.3.0"
 pip install -e ".[dev]"
 
 # 本地开发（与 quant-data-kit 同目录时可用 editable）
@@ -48,6 +48,9 @@ python -m a_share_multifactor.backtest --config configs/run_four_factors.yaml --
 | 因子 | 市值、PE、PB、20 日动量、20 日波动率 |
 | 合成 | 等权、IC 加权、滚动 IC、Ridge、OLS |
 | 回测 | 分层回测、HS300 基准超额、换手成本 |
+| 数据治理 | PIT可获得时间、历史股票池、不可变快照、质量摘要 |
+| 验证 | expanding walk-forward、泄漏审计、FDR校正、折间稳定性 |
+| 运行契约 | 标准returns/positions/orders/costs/exposures及哈希清单 |
 | 散户模式 | 1 万元本金、100 股一手、最低佣金、印花税 |
 | 调仓频率 | 日 / 周 / 月；最少持有天数；可选提前止盈 |
 | 工具 | 多模型对比、81 组参数网格、指定日期买入清单 |
@@ -169,6 +172,10 @@ python scripts/compute_buy_list.py --trade-date 2026-07-17 \
 | `costs.trade_freq` | daily / weekly / monthly |
 | `costs.min_holding_days` | 最少持有交易日 |
 | `fetch.max_workers` | 并行拉取线程数（限流时可设为 1） |
+| `validation.*` | OOS训练/测试/步长/embargo与FDR阈值 |
+
+每次回测在`outputs/<run_id>/standard/`写入不可变标准运行契约，并在`validation/`
+写入样本外验证证据。可用`quant-lab validate --run-dir outputs/<run_id>`检查产物完整性。
 
 ## 开发规范
 

@@ -16,6 +16,7 @@ def test_merge_price_fundamentals_pit_sparse() -> None:
             "symbol": ["000001", "000001"],
             "date": pd.to_datetime(["2020-01-02", "2020-01-06"]),
             "report_date": pd.to_datetime(["2020-01-02", "2020-01-06"]),
+            "available_at": pd.to_datetime(["2020-01-02", "2020-01-06"]),
             "market_cap": [1e10, 1.1e10],
             "pe_ratio": [8.0, 8.5],
         }
@@ -38,6 +39,7 @@ def test_merge_price_fundamentals_exact_join() -> None:
             "symbol": ["000001"],
             "date": pd.to_datetime(["2020-01-02"]),
             "report_date": pd.to_datetime(["2020-01-02"]),
+            "available_at": pd.to_datetime(["2020-01-02"]),
             "market_cap": [1e10],
         }
     )
