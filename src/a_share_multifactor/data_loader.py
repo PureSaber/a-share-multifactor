@@ -18,6 +18,7 @@ from quant_data_kit.providers.universe import (
     fetch_hs300_constituents,
     fetch_hs300_constituents_history,
 )
+from quant_data_kit.snapshots import create_snapshot
 from quant_data_kit.storage import (
     cache_covers_range,
     incremental_start_date,
@@ -26,7 +27,6 @@ from quant_data_kit.storage import (
     save_parquet,
     should_refresh_cache,
 )
-from quant_data_kit.snapshots import create_snapshot
 from quant_data_kit.temporal import audit_point_in_time, point_in_time_join
 from quant_data_kit.validate import validate_price_frame
 
