@@ -30,7 +30,7 @@ def _panel(n_days: int = 60, n_symbols: int = 3) -> pd.DataFrame:
 
 
 def test_quant_factors_version_pinned() -> None:
-    assert quant_factors_version().startswith("0.1")
+    assert quant_factors_version() == "0.2.0"
 
 
 def test_shared_factors_numeric_parity() -> None:
