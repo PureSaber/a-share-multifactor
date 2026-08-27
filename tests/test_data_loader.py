@@ -37,6 +37,9 @@ def sample_fundamentals() -> pd.DataFrame:
         {
             "symbol": ["000001", "000001", "000002", "000002"],
             "date": pd.to_datetime(["2020-01-02", "2020-01-03", "2020-01-02", "2020-01-03"]),
+            "available_at": pd.to_datetime(
+                ["2020-01-02", "2020-01-03", "2020-01-02", "2020-01-03"]
+            ),
             "market_cap": [1e10, 1.01e10, 2e10, 2.01e10],
             "pe_ratio": [8.0, 8.1, 12.0, 12.1],
         }
@@ -106,6 +109,7 @@ def test_fetch_fundamentals_akshare_column_names() -> None:
         "pe_ratio",
         "pb_ratio",
         "report_date",
+        "available_at",
     ]
     assert fundamentals["pb_ratio"].tolist() == [2.0, 2.1]
 

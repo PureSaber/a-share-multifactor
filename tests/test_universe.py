@@ -23,6 +23,7 @@ def test_fetch_hs300_constituents_history_mock() -> None:
         "2020-02-29",
         fetch_fn=mock_fetch,
         current_symbols=["000001"],
+        trade_dates=pd.date_range("2020-01-01", "2020-02-29", freq="B"),
     )
     assert not universe.empty
     assert "in_universe" in universe.columns

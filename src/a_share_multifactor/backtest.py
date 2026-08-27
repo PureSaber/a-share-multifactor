@@ -19,6 +19,11 @@ from a_share_multifactor.ic_analysis import analyze_factors, analyze_ic_decay, e
 from a_share_multifactor.preprocess import prepare_factor_panel
 from a_share_multifactor.quantile_backtest import BacktestResult, run_quantile_backtest
 from a_share_multifactor.report import write_html_report
+from a_share_multifactor.run_contract import write_equity_standard_run
+from a_share_multifactor.research_validation import (
+    ResearchValidationResult,
+    run_research_validation,
+)
 from a_share_multifactor.synthesis import synthesize
 
 logger = logging.getLogger(__name__)
@@ -29,6 +34,7 @@ def _write_run_metadata(
     config: AppConfig,
     config_source: Path | None,
     run_id: str,
+    extra: dict | None = None,
 ) -> None:
     snapshot_path = run_dir / "config.snapshot.yaml"
     if config_source and config_source.is_file():
@@ -46,6 +52,7 @@ def _write_run_metadata(
         "factors": list(config.factors),
         "universe": config.universe,
         "outputs_dir": str(config.outputs_dir),
+        **(extra or {}),
     }
     (run_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -56,6 +63,8 @@ def write_outputs(
     config: AppConfig,
     output_root: Path | None = None,
     config_source: Path | None = None,
+    validation_result: ResearchValidationResult | None = None,
+    run_metadata: dict | None = None,
 ) -> Path:
     """Write IC summary and backtest results to outputs directory."""
     root = output_root or Path(config.outputs_dir)
@@ -75,6 +84,19 @@ def write_outputs(
         results.turnover.to_csv(run_dir / "turnover.csv")
     if not results.excess_returns.empty:
         results.excess_returns.to_csv(run_dir / "excess_returns.csv")
+    if validation_result is not None:
+        validation_dir = run_dir / "validation"
+        validation_dir.mkdir(parents=True, exist_ok=True)
+        validation_result.fold_metrics.to_csv(validation_dir / "fold_metrics.csv", index=False)
+        validation_result.multiple_testing.to_csv(
+            validation_dir / "multiple_testing.csv", index=False
+        )
+        validation_result.leakage_audit.to_csv(
+            validation_dir / "leakage_audit.csv", index=False
+        )
+        (validation_dir / "summary.json").write_text(
+            json.dumps(validation_result.summary, indent=2), encoding="utf-8"
+        )
 
     ic_report.to_csv(latest_dir / "ic_summary.csv", index=False)
     results.quantile_returns.to_csv(latest_dir / "quantile_returns.csv")
@@ -86,6 +108,19 @@ def write_outputs(
         results.turnover.to_csv(latest_dir / "turnover.csv")
     if not results.excess_returns.empty:
         results.excess_returns.to_csv(latest_dir / "excess_returns.csv")
+    if validation_result is not None:
+        validation_dir = latest_dir / "validation"
+        validation_dir.mkdir(parents=True, exist_ok=True)
+        validation_result.fold_metrics.to_csv(validation_dir / "fold_metrics.csv", index=False)
+        validation_result.multiple_testing.to_csv(
+            validation_dir / "multiple_testing.csv", index=False
+        )
+        validation_result.leakage_audit.to_csv(
+            validation_dir / "leakage_audit.csv", index=False
+        )
+        (validation_dir / "summary.json").write_text(
+            json.dumps(validation_result.summary, indent=2), encoding="utf-8"
+        )
 
     config_summary = (
         f"Universe: {config.universe} | Factors: {config.factors} | "
@@ -94,8 +129,8 @@ def write_outputs(
     write_html_report(results, ic_report, latest_dir / "report.html", config_summary)
     write_html_report(results, ic_report, run_dir / "report.html", config_summary)
 
-    _write_run_metadata(run_dir, config, config_source, run_id)
-    _write_run_metadata(latest_dir, config, config_source, run_id)
+    _write_run_metadata(run_dir, config, config_source, run_id, run_metadata)
+    _write_run_metadata(latest_dir, config, config_source, run_id, run_metadata)
 
     return run_dir
 
@@ -107,11 +142,20 @@ def run_pipeline(
 ) -> tuple[BacktestResult, pd.DataFrame, Path]:
     """Run full factor research pipeline."""
     panel = build_dataset(config, data_dir=data_dir)
+    run_metadata = {
+        "dataset_snapshots": panel.attrs.get("dataset_snapshots", {}),
+        "data_quality": panel.attrs.get("data_quality", {}),
+    }
     logger.info("Loaded panel: %s rows, %s symbols", len(panel), panel["symbol"].nunique())
 
     panel = prepare_factor_panel(config, panel)
     factor_cols = [col for col in config.factors if col in panel.columns]
     ic_report = analyze_factors(panel, factor_cols, config.forward_return_col)
+    validation_result = None
+    if config.validation.enabled:
+        validation_result = run_research_validation(
+            panel, factor_cols, config.forward_return_col, config
+        )
     scored = synthesize(panel, config, ic_summary=ic_report)
 
     benchmark = load_benchmark_returns(config, data_dir=data_dir)
@@ -128,7 +172,20 @@ def run_pipeline(
     ic_decay = analyze_ic_decay(panel, factor_cols, config.ic_decay_horizons, price_col="close")
     ic_decay.to_csv(latest_dir / "ic_decay.csv", index=False)
 
-    run_dir = write_outputs(results, ic_report, config)
+    run_dir = write_outputs(
+        results,
+        ic_report,
+        config,
+        validation_result=validation_result,
+        run_metadata=run_metadata,
+    )
+    write_equity_standard_run(
+        run_dir,
+        results,
+        scored,
+        config,
+        dataset_snapshots=run_metadata["dataset_snapshots"],
+    )
     export_ic_series(panel, factor_cols, config.forward_return_col, run_dir / "ic_series")
     ic_decay.to_csv(run_dir / "ic_decay.csv", index=False)
     return results, ic_report, run_dir
@@ -152,6 +209,10 @@ def main() -> None:
     logger.info("Loaded config: universe=%s, factors=%s", config.universe, config.factors)
 
     panel = build_dataset(config, data_dir=args.data_dir)
+    run_metadata = {
+        "dataset_snapshots": panel.attrs.get("dataset_snapshots", {}),
+        "data_quality": panel.attrs.get("data_quality", {}),
+    }
     if args.symbols_limit > 0:
         keep = sorted(panel["symbol"].unique())[: args.symbols_limit]
         panel = panel[panel["symbol"].isin(keep)].reset_index(drop=True)
@@ -163,6 +224,11 @@ def main() -> None:
     scored = synthesize(panel, config, ic_summary=ic_report)
     benchmark = load_benchmark_returns(config, data_dir=args.data_dir)
     results = run_quantile_backtest(scored, config, benchmark_returns=benchmark)
+    validation_result = None
+    if config.validation.enabled:
+        validation_result = run_research_validation(
+            panel, factor_cols, config.forward_return_col, config
+        )
 
     if args.dry_run:
         logger.info("Dry run complete — skipping output write")
@@ -178,7 +244,20 @@ def main() -> None:
     ic_decay.to_csv(latest_dir / "ic_decay.csv", index=False)
 
     run_dir = write_outputs(
-        results, ic_report, config, output_root=root, config_source=args.config
+        results,
+        ic_report,
+        config,
+        output_root=root,
+        config_source=args.config,
+        validation_result=validation_result,
+        run_metadata=run_metadata,
+    )
+    write_equity_standard_run(
+        run_dir,
+        results,
+        scored,
+        config,
+        dataset_snapshots=run_metadata["dataset_snapshots"],
     )
     export_ic_series(panel, factor_cols, config.forward_return_col, run_dir / "ic_series")
     ic_decay.to_csv(run_dir / "ic_decay.csv", index=False)

@@ -39,6 +39,17 @@ filters:
   min_list_days: 60
   pit_fundamentals: true
   fundamental_lag_days: 0
+  fundamental_max_age_days: 550
+  require_availability_timestamp: true
+
+# 严格样本外验证：训练窗口、测试窗口和embargo均按交易日计
+validation:
+  enabled: true
+  train_size: 504
+  test_size: 126
+  step_size: 126
+  embargo_size: 20
+  multiple_testing_alpha: 0.05
 
 # 因子预处理
 preprocess:
@@ -86,3 +97,4 @@ data:
   fundamentals: cn_a/fundamentals.parquet
   universe: cn_a/universe/hs300_membership.parquet
   benchmark: cn_a/benchmark/hs300_index.parquet
+  snapshot_root: snapshots
