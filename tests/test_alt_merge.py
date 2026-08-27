@@ -60,7 +60,9 @@ def test_alt_merge_columns(tmp_path) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     save_parquet(panel, data_dir / "cn_a/daily/prices.parquet")
-    save_parquet(panel[["symbol", "date", "market_cap", "pe_ratio", "pb_ratio"]], data_dir / "cn_a/fundamentals.parquet")
+    fundamentals = panel[["symbol", "date", "market_cap", "pe_ratio", "pb_ratio"]].copy()
+    fundamentals["available_at"] = fundamentals["date"]
+    save_parquet(fundamentals, data_dir / "cn_a/fundamentals.parquet")
     save_parquet(earnings, data_dir / "cn_a/alt/earnings_forecast.parquet")
     save_parquet(northbound, data_dir / "cn_a/alt/northbound_holdings.parquet")
     save_parquet(industry_returns, data_dir / "cn_a/alt/industry_returns.parquet")
@@ -105,6 +107,9 @@ def test_build_dataset_without_alt(tmp_path) -> None:
         {
             "symbol": ["000001", "000001", "000002", "000002"],
             "date": pd.to_datetime(["2020-01-02", "2020-01-03", "2020-01-02", "2020-01-03"]),
+            "available_at": pd.to_datetime(
+                ["2020-01-02", "2020-01-03", "2020-01-02", "2020-01-03"]
+            ),
             "market_cap": [1e10, 1.01e10, 2e10, 2.01e10],
             "pe_ratio": [8.0, 8.1, 12.0, 12.1],
         }
