@@ -19,11 +19,11 @@ from a_share_multifactor.ic_analysis import analyze_factors, analyze_ic_decay, e
 from a_share_multifactor.preprocess import prepare_factor_panel
 from a_share_multifactor.quantile_backtest import BacktestResult, run_quantile_backtest
 from a_share_multifactor.report import write_html_report
-from a_share_multifactor.run_contract import write_equity_standard_run
 from a_share_multifactor.research_validation import (
     ResearchValidationResult,
     run_research_validation,
 )
+from a_share_multifactor.run_contract import write_equity_standard_run
 from a_share_multifactor.synthesis import synthesize
 
 logger = logging.getLogger(__name__)
