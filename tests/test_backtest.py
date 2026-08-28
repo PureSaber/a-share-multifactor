@@ -1,7 +1,10 @@
+import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
+from a_share_multifactor import run_contract
 from a_share_multifactor.backtest import run_pipeline, write_outputs
 from a_share_multifactor.config import AppConfig, DataPaths, FilterConfig
 from a_share_multifactor.data_loader import save_parquet
@@ -28,7 +31,8 @@ def test_write_outputs(tmp_path: Path) -> None:
     assert (tmp_path / "outputs" / "latest" / "report.html").exists()
 
 
-def test_run_pipeline(tmp_path: Path) -> None:
+def test_run_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run_contract, "_code_version", lambda _root: "1" * 40)
     dates = pd.date_range("2020-01-01", periods=40, freq="B")
     symbols = ["000001", "000002"]
     rows = []
@@ -77,3 +81,27 @@ def test_run_pipeline(tmp_path: Path) -> None:
     assert isinstance(results, BacktestResult)
     assert not ic_report.empty
     assert output_dir.exists()
+    assert (output_dir / "standard" / "run_manifest.json").exists()
+    certified_dir = output_dir / "standard" / "v2"
+    assert (certified_dir / "run_manifest.json").exists()
+    assert all(
+        (certified_dir / f"{name}.parquet").exists()
+        for name in (
+            "returns",
+            "positions",
+            "portfolio_snapshots",
+            "exposures",
+            "orders",
+            "order_events",
+            "fills",
+            "costs",
+            "cash_ledger",
+            "margin",
+        )
+    )
+    manifest = json.loads((certified_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    catalog_digest = manifest["dataset_snapshots"]["fixture-catalog-v1"]
+    assert catalog_digest.startswith("sha256:")
+    assert manifest["dataset_snapshots"]["scored-panel-v1"].startswith("sha256:")
+    assert manifest["instrument_master_version"].endswith(catalog_digest[:19])
+    assert "dataset:scored-panel-v1" in manifest["lineage"]["orders"]
