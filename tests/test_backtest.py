@@ -9,6 +9,7 @@ from a_share_multifactor.backtest import run_pipeline, write_outputs
 from a_share_multifactor.config import AppConfig, DataPaths, FilterConfig
 from a_share_multifactor.data_loader import save_parquet
 from a_share_multifactor.quantile_backtest import BacktestResult, run_quantile_backtest
+from a_share_multifactor.run_contract import _build_events, build_instrument_master
 
 
 def test_write_outputs(tmp_path: Path) -> None:
@@ -105,3 +106,8 @@ def test_run_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert manifest["dataset_snapshots"]["scored-panel-v1"].startswith("sha256:")
     assert manifest["instrument_master_version"].endswith(catalog_digest[:19])
     assert "dataset:scored-panel-v1" in manifest["lineage"]["orders"]
+    events = _build_events(prices, build_instrument_master(prices)[0])
+    event_start = min(event.available_at for event in events).isoformat()
+    event_end = max(event.available_at for event in events).isoformat()
+    assert manifest["time_range"] == {"start": event_start, "end": event_end}
+    assert not any(value.startswith("1970-") for value in manifest["time_range"].values())

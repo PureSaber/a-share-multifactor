@@ -134,6 +134,26 @@ def test_fixture_and_event_validation_fail_closed(tmp_path: Path) -> None:
         _build_events(duplicated_bar, specs)
 
 
+def test_production_events_have_deterministic_sequences_and_are_order_normalized() -> None:
+    panel = _certified_panel()
+    specs, _ = build_instrument_master(panel)
+    events = _build_events(panel.sample(frac=1, random_state=17), specs)
+    repeated = _build_events(panel.sample(frac=1, random_state=91), specs)
+
+    assert all(isinstance(event.sequence, int) and event.sequence >= 0 for event in events)
+    assert [event.event_id for event in events] == [event.event_id for event in repeated]
+    assert [event.sequence for event in events] == [event.sequence for event in repeated]
+    assert list(events) == sorted(events, key=lambda event: (event.available_at, event.event_id))
+
+
+def test_production_event_builder_rejects_duplicate_identity_after_reordering() -> None:
+    panel = _certified_panel()
+    specs, _ = build_instrument_master(panel)
+    duplicate = pd.concat([panel.sample(frac=1, random_state=3), panel.iloc[[0]]])
+    with pytest.raises(ValueError, match="one bar per symbol"):
+        _build_events(duplicate, specs)
+
+
 def test_certified_snapshot_conflict_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
