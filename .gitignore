@@ -10,12 +10,14 @@ venv/
 .ipynb_checkpoints/
 .env
 data/**
+!data/fixtures/
 !data/README.md
 outputs/**
 !outputs/.gitkeep
 *.pkl
 *.parquet
 *.csv
+!data/fixtures/a_share_instrument_catalog_v1.csv
 _stock_list.json
 .idea/
 .vscode/
