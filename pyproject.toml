@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "a-share-multifactor"
-version = "0.3.0"
+version = "0.4.0"
 description = "A-share multi-factor stock selection research project"
 readme = "README.md"
 license = { text = "MIT" }
@@ -18,14 +18,16 @@ dependencies = [
     "akshare>=1.12",
     "pyarrow>=14.0",
     "matplotlib>=3.8",
-    "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@v0.3.0",
+    "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@v0.6.0",
     "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@v0.2.0",
-    "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@v0.2.0",
+    "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@v0.3.0",
+    "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@v0.3.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4",
+    "pytest-cov>=5.0",
     "ruff>=0.9.0",
     "jupyterlab>=4.0",
 ]
@@ -43,6 +45,15 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "--cov=src/a_share_multifactor --cov-branch --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+branch = true
+source = ["a_share_multifactor"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
 
 [tool.ruff]
 line-length = 100
