@@ -44,10 +44,10 @@ _STRATEGY_ID = "a-share-multifactor-qexec"
 _ACCOUNT_ID = "a-share-multifactor-account"
 _MONEY_SCALE = 8
 _DEPENDENCIES = {
-    "quant-data-kit": "84884f5005cbb9c0111564732d96509a63f34d79",
-    "quant-execution": "9529d95a7c19ff3e605a8377d54af75a4260a49e",
-    "quant-lab": "ae0e9edea5cef136f9888d734030da1922b07283",
-    "quant-factors": "2f748f9dc2fe942b461ce766865a68ddf635449c",
+    "quant-data-kit": "960db6d7f30eae942efd46a0dab7596585277823",
+    "quant-execution": "a4c2724676d31a20303f0d381f9c65e4beede783",
+    "quant-lab": "63d11f0b26ad3ef272ef09476586a9e36ddbc347",
+    "quant-factors": "16f15e366bd90074f3e6c2a66d342df6e10fb6c3",
 }
 _V2_COLUMNS = {
     "returns": [
@@ -366,6 +366,7 @@ def _build_events(panel: pd.DataFrame, specs: dict[str, InstrumentSpec]) -> tupl
                 source="fixture-certified",
                 trading_day=day,
                 session_id=f"CN-A-SHARE:{day.isoformat()}",
+                sequence=index,
                 bar_start=timestamp.to_pydatetime(),
                 bar_end=bar_end.to_pydatetime(),
                 open_price=_fixed(row["open"], scale),
@@ -478,8 +479,8 @@ class _RecordingLedger(ExactAccountLedger):
         self._recorded_snapshots: dict[datetime, Any] = {}
         super().__init__(*args, **kwargs)
 
-    def reset(self) -> None:
-        super().reset()
+    def reset(self, *, opened_at: datetime | None = None) -> None:
+        super().reset(opened_at=opened_at)
         self._recorded_snapshots = {}
 
     def capture_state(self) -> dict[str, object]:
@@ -853,7 +854,7 @@ def _write_certified_v2(
         "legacy_modules": ["trading_costs", "trade_ledger"],
         "legacy_modules_are": "research-only",
         "margin_policy": "AShareRule cash account: zero initial and maintenance margin; no aggregate margin replication",
-        "fee_classification": "frozen QExec v0.2 unified maker/taker; commission/stamp classification unavailable",
+        "fee_classification": "frozen QExec v0.3 unified maker/taker; commission/stamp classification unavailable",
     }
     write_standard_run_v2(
         run_dir,
@@ -874,7 +875,7 @@ def _write_certified_v2(
         random_seed=0,
         dataset_snapshots=snapshots,
         instrument_master_version=(f"a-share-fixture-catalog-v1@sha256:{catalog_sha256[:12]}"),
-        execution_model_version="quant-execution-v0.2.0-bar-replay-v1",
+        execution_model_version="quant-execution-v0.3.0-bar-replay-v1",
         base_currency="CNY",
         lineage=lineage,
         capabilities=["backtest", "deterministic-replay", "pit", "t-plus-one"],
