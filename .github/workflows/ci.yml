@@ -21,7 +21,7 @@ jobs:
         with:
           repository: PureSaber/quant-agent
           path: quant-agent
-          ref: master
+          ref: v0.3.0
         continue-on-error: true
 
       - name: Set up Python
