@@ -18,8 +18,7 @@ Python · Pandas · Scikit-learn · [**quant-data-kit**](https://github.com/Pure
 | 宏观面 | `industry_rs_20d` | 行业 20 日相对 HS300 强弱 |
 
 ```bash
-# 安装（内部依赖由pyproject.toml锁定tag）
-pip install "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@v0.3.0"
+# 安装（内部依赖由pyproject.toml锁定不可变tag）
 pip install -e ".[dev]"
 
 # 本地开发（与 quant-data-kit 同目录时可用 editable）
@@ -174,8 +173,15 @@ python scripts/compute_buy_list.py --trade-date 2026-07-17 \
 | `fetch.max_workers` | 并行拉取线程数（限流时可设为 1） |
 | `validation.*` | OOS训练/测试/步长/embargo与FDR阈值 |
 
-每次回测在`outputs/<run_id>/standard/`写入不可变标准运行契约，并在`validation/`
-写入样本外验证证据。可用`quant-lab validate --run-dir outputs/<run_id>`检查产物完整性。
+每次认证回测在`outputs/<run_id>/standard/v2/`写入不可变`backtest-ledger`契约，完整包含
+returns、positions、portfolio_snapshots、exposures、orders、order_events、fills、costs、
+cash_ledger和margin，并通过`load_and_validate_standard_run`回读验证；`standard/`根目录仍
+双写历史v1以保持读取兼容。认证订单只能经过
+`Strategy.on_event -> DeterministicRunEngine -> 撮合/成交 -> RuleBookRiskGate -> ExactAccountLedger`。
+`trading_costs.py`和`trade_ledger.py`保留为legacy/research-only，不得用于认证产物。
+fixture目录是版本化、显式、PIT的测试目录，其有效期是认证fixture窗口，不代表标的上市历史。
+认证写出在任何文件落盘前检查Git工作树并对dirty状态fail closed；scored_panel使用与行列顺序无关的canonical SHA-256进入dataset snapshots和lineage，fixture catalog同样以`sha256:`标识，instrument master版本绑定catalog哈希前12位。
+冻结的QExec v0.2.0对非期货费用只提供统一Fee及原始`maker`/`taker`分类；认证路径原样保留该分类，不在产物层拆分commission或stamp_duty。若需要显式费用分类，必须由项目负责人串行修订quant-execution并重新发布冻结tag。
 
 ## 开发规范
 
@@ -192,7 +198,7 @@ pre-commit install
 pre-commit run --all-files
 ```
 
-CI（GitHub Actions）在 push / PR 时自动运行 Ruff + Pytest（Python 3.10 / 3.11）。
+CI（GitHub Actions）在 push / PR 时自动运行Ruff静态检查和带branch coverage门禁的Pytest（Python 3.10 / 3.11 / 3.12）。
 
 ## 常见问题
 
