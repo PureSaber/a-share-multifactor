@@ -195,7 +195,7 @@ fixture目录是版本化、显式、PIT的测试目录，其有效期是认证f
 QExec`v0.4.1`（`29eccc0e392968b5f7c31976a329605aacce369a`）和QLab`v0.3.1`
 （`27489d270e132adbec1bced93eb2ae84ad5e1a9b`）。禁止依赖浮动分支或未发布commit。
 
-锁文件由Python3.10和固定`pip-tools==7.6.1`重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
+锁文件由规范环境Windows+Python3.10和固定`pip-tools==7.6.1`重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
 Notebook工具不进入CI的dev闭包，需要时单独安装`.[notebook]`。并在Python3.10、3.11、3.12
 中严格按锁安装验证。AKShare 1.18.88的Linux元数据会同时安装两个相互覆盖的MiniRacer实现；
 本项目使用[可审计的metadata-only派生wheel](vendor/akshare/README.md)，包内全部运行代码、资源和
@@ -226,8 +226,9 @@ pre-commit run --all-files
 
 CI（GitHub Actions）在Windows和Linux上分别运行Python3.10、3.11、3.12矩阵，先从固定官方wheel
 双重重建并核验派生wheel哈希与payload；随后执行严格锁安装、双`pip check`、MiniRacer运行烟测、
-Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%。两个Python3.10job还会各自
-从零连续重建锁两次并与仓库版本比较。
+Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%。Windows+Python3.10job还会
+从零连续重建锁两次并与仓库版本比较；Linux只安装并验证这份规范锁，因为依赖元数据中的平台条件
+（例如`colorama`）会让Linux上的重新解析得到不同但不具规范性的闭包。
 
 ## 常见问题
 

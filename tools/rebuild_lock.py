@@ -1,4 +1,4 @@
-"""Rebuild requirements.lock from scratch with the certified Python 3.10 toolchain."""
+"""Rebuild requirements.lock with the canonical Windows/Python 3.10 toolchain."""
 
 from __future__ import annotations
 
@@ -35,6 +35,11 @@ PIP_COMPILE_ARGUMENTS = (
 
 
 def main() -> int:
+    if sys.platform != "win32":
+        raise RuntimeError(
+            "requirements.lock must be rebuilt on Windows because dependency metadata "
+            "contains platform-conditional packages; other platforms only install and verify it"
+        )
     if sys.version_info[:2] != (3, 10):
         raise RuntimeError(
             "requirements.lock must be rebuilt with Python 3.10; "
