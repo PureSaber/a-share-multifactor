@@ -195,17 +195,15 @@ fixture目录是版本化、显式、PIT的测试目录，其有效期是认证f
 QExec`v0.4.1`（`29eccc0e392968b5f7c31976a329605aacce369a`）和QLab`v0.3.1`
 （`27489d270e132adbec1bced93eb2ae84ad5e1a9b`）。禁止依赖浮动分支或未发布commit。
 
-锁文件由Python3.10重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
+锁文件由Python3.10和固定`pip-tools==7.6.1`重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
 Notebook工具不进入CI的dev闭包，需要时单独安装`.[notebook]`。并在Python3.10、3.11、3.12
 中严格按锁安装验证。AKShare 1.18.88的Linux元数据会同时安装两个相互覆盖的MiniRacer实现；
-本项目使用[可审计的metadata-only派生wheel](vendor/akshare/README.md)，运行源码仍对应上游固定
-commit，Windows和Linux统一只使用`mini-racer==0.14.1`。重建命令为：
+本项目使用[可审计的metadata-only派生wheel](vendor/akshare/README.md)，包内全部运行代码、资源和
+LICENSE与官方wheel逐字节一致，Windows和Linux统一只使用`mini-racer==0.14.1`。锁文件头与实际
+重建命令统一为：
 
 ```bash
-pip-compile --extra dev --build-deps-for editable --allow-unsafe --strip-extras \
-  --resolver backtracking --index-url https://pypi.org/simple \
-  --find-links vendor/wheels --constraint constraints/runtime.txt \
-  --output-file requirements.lock pyproject.toml
+python tools/rebuild_lock.py
 ```
 
 迁移只新增不可变`standard/v2`产物，不改写历史v1；回滚使用Git revert同时恢复
@@ -215,8 +213,8 @@ pip-compile --extra dev --build-deps-for editable --allow-unsafe --strip-extras 
 
 ```bash
 # 代码检查与格式化
-ruff check src tests scripts
-ruff format src tests scripts
+ruff check src tests scripts tools
+ruff format src tests scripts tools
 
 # 测试
 pytest -q
@@ -226,8 +224,10 @@ pre-commit install
 pre-commit run --all-files
 ```
 
-CI（GitHub Actions）在Windows和Linux上分别运行Python3.10、3.11、3.12矩阵，执行严格锁安装、
-双`pip check`、MiniRacer运行烟测、Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%。
+CI（GitHub Actions）在Windows和Linux上分别运行Python3.10、3.11、3.12矩阵，先从固定官方wheel
+双重重建并核验派生wheel哈希与payload；随后执行严格锁安装、双`pip check`、MiniRacer运行烟测、
+Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%。两个Python3.10job还会各自
+从零连续重建锁两次并与仓库版本比较。
 
 ## 常见问题
 

@@ -25,4 +25,5 @@ _stock_list.json
 .DS_Store
 .coverage
 coverage-*.json
+.compat/
 Thumbs.db
