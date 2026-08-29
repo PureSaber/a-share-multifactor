@@ -197,11 +197,14 @@ QExec`v0.4.1`（`29eccc0e392968b5f7c31976a329605aacce369a`）和QLab`v0.3.1`
 
 锁文件由Python3.10重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
 Notebook工具不进入CI的dev闭包，需要时单独安装`.[notebook]`。并在Python3.10、3.11、3.12
-中严格按锁安装验证。重建命令为：
+中严格按锁安装验证。AKShare 1.18.88的Linux元数据会同时安装两个相互覆盖的MiniRacer实现；
+本项目使用[可审计的metadata-only派生wheel](vendor/akshare/README.md)，运行源码仍对应上游固定
+commit，Windows和Linux统一只使用`mini-racer==0.14.1`。重建命令为：
 
 ```bash
 pip-compile --extra dev --build-deps-for editable --allow-unsafe --strip-extras \
   --resolver backtracking --index-url https://pypi.org/simple \
+  --find-links vendor/wheels --constraint constraints/runtime.txt \
   --output-file requirements.lock pyproject.toml
 ```
 
@@ -223,7 +226,8 @@ pre-commit install
 pre-commit run --all-files
 ```
 
-CI（GitHub Actions）在 push / PR 时自动运行Ruff静态检查和带branch coverage门禁的Pytest（Python 3.10 / 3.11 / 3.12）。
+CI（GitHub Actions）在Windows和Linux上分别运行Python3.10、3.11、3.12矩阵，执行严格锁安装、
+双`pip check`、MiniRacer运行烟测、Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%。
 
 ## 常见问题
 
