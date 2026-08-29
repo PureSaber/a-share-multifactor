@@ -22,7 +22,7 @@ Python · Pandas · Scikit-learn · [**quant-data-kit**](https://github.com/Pure
 | 宏观面 | `industry_rs_20d` | 行业 20 日相对 HS300 强弱 |
 
 ```bash
-# 安装审计过的运行时、开发和editable构建依赖
+# 安装审计过的运行时、开发和editable构建依赖；Notebook工具单独安装`.[notebook]`
 python -m pip install --no-deps --requirement requirements.lock
 python -m pip check
 python -m pip install --no-deps --no-build-isolation --editable .
@@ -195,7 +195,8 @@ fixture目录是版本化、显式、PIT的测试目录，其有效期是认证f
 QExec`v0.4.1`（`29eccc0e392968b5f7c31976a329605aacce369a`）和QLab`v0.3.1`
 （`27489d270e132adbec1bced93eb2ae84ad5e1a9b`）。禁止依赖浮动分支或未发布commit。
 
-锁文件由Python3.10重建，覆盖runtime、dev和editable-build依赖，并在Python3.10、3.11、3.12
+锁文件由Python3.10重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
+Notebook工具不进入CI的dev闭包，需要时单独安装`.[notebook]`。并在Python3.10、3.11、3.12
 中严格按锁安装验证。重建命令为：
 
 ```bash
