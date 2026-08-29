@@ -17,7 +17,8 @@ def _namespace_owners() -> list[str]:
 
 
 def test_akshare_uses_one_working_mini_racer_provider() -> None:
-    assert akshare.__version__ == "1.18.88.post1"
+    # The derivative is metadata-only: AKShare's runtime payload remains official 1.18.88.
+    assert akshare.__version__ == "1.18.88"
     assert version("akshare") == "1.18.88.post1"
     assert _namespace_owners() == ["mini-racer"]
     assert MiniRacer().eval("1+1") == 2
