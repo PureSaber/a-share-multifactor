@@ -1,5 +1,9 @@
 # A-Share Multifactor
 
+本版本`0.4.1`完成M6策略层依赖治理。认证路径消费`standard/v2@2.0.0`，策略只通过
+`Strategy.on_event`产生订单意图，成交、费用、滑点、持仓和NAV继续由统一执行与账本提供；
+本次不改变策略逻辑和历史`standard/v1`语义。
+
 A 股多因子选股研究项目：从 AKShare 拉取行情，计算因子，做 IC 分析、分层回测与散户约束下的组合模拟。
 
 **研究用途**：结果仅供学习研究，不构成投资建议。
@@ -18,12 +22,13 @@ Python · Pandas · Scikit-learn · [**quant-data-kit**](https://github.com/Pure
 | 宏观面 | `industry_rs_20d` | 行业 20 日相对 HS300 强弱 |
 
 ```bash
-# 安装（内部依赖由pyproject.toml锁定不可变tag）
-pip install -e ".[dev]"
+# 安装审计过的运行时、开发和editable构建依赖；Notebook工具单独安装`.[notebook]`
+python -m pip install --no-deps --requirement requirements.lock
+python -m pip check
+python -m pip install --no-deps --no-build-isolation --editable .
+python -m pip check
 
-# 本地开发（与 quant-data-kit 同目录时可用 editable）
-# pip install -e ../quant-data-kit[akshare,dev]
-pip install -e ".[dev]"
+# 本地开发已通过上面的no-deps、no-build-isolation方式安装editable项目。
 
 # 拉取含另类数据
 python -m a_share_multifactor.fetch_data --fetch-alt --symbols-limit 10 --verbose
@@ -181,14 +186,35 @@ cash_ledger和margin，并通过`load_and_validate_standard_run`回读验证；`
 `trading_costs.py`和`trade_ledger.py`保留为legacy/research-only，不得用于认证产物。
 fixture目录是版本化、显式、PIT的测试目录，其有效期是认证fixture窗口，不代表标的上市历史。
 认证写出在任何文件落盘前检查Git工作树并对dirty状态fail closed；scored_panel使用与行列顺序无关的canonical SHA-256进入dataset snapshots和lineage，fixture catalog同样以`sha256:`标识，instrument master版本绑定catalog哈希前12位。
-冻结的QExec v0.2.0对非期货费用只提供统一Fee及原始`maker`/`taker`分类；认证路径原样保留该分类，不在产物层拆分commission或stamp_duty。若需要显式费用分类，必须由项目负责人串行修订quant-execution并重新发布冻结tag。
+冻结的QExec`v0.4.1`对非期货费用只提供统一Fee及原始`maker`/`taker`分类；认证路径原样保留该分类，不在产物层拆分commission或stamp_duty。若需要显式费用分类，必须由项目负责人串行修订quant-execution并重新发布冻结tag。
+
+## M6依赖和契约治理
+
+`pyproject.toml`和`requirements.lock`均使用已发布annotatedtag：QDK`v0.6.1`（peeledcommit
+`edf1351690dc60691cc6330390adcdbf8bc79c5f`）、QFactors`v0.2.1`（`c06472b713f15b3cf8078690b33807eba6563a9c`）、
+QExec`v0.4.1`（`29eccc0e392968b5f7c31976a329605aacce369a`）和QLab`v0.3.1`
+（`27489d270e132adbec1bced93eb2ae84ad5e1a9b`）。禁止依赖浮动分支或未发布commit。
+
+锁文件由规范环境Windows+Python3.10和固定`pip-tools==7.6.1`重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
+Notebook工具不进入CI的dev闭包，需要时单独安装`.[notebook]`。并在Python3.10、3.11、3.12
+中严格按锁安装验证。AKShare 1.18.88的Linux元数据会同时安装两个相互覆盖的MiniRacer实现；
+本项目使用[可审计的metadata-only派生wheel](vendor/akshare/README.md)，包内全部运行代码、资源和
+LICENSE与官方wheel逐字节一致，Windows和Linux统一只使用`mini-racer==0.14.1`。锁文件头与实际
+重建命令统一为：
+
+```bash
+python tools/rebuild_lock.py
+```
+
+迁移只新增不可变`standard/v2`产物，不改写历史v1；回滚使用Git revert同时恢复
+`pyproject.toml`、`requirements.lock`、CI和本文档，再按旧锁重装。旧tag不移动、不覆盖。
 
 ## 开发规范
 
 ```bash
 # 代码检查与格式化
-ruff check src tests scripts
-ruff format src tests scripts
+ruff check src tests scripts tools
+ruff format src tests scripts tools
 
 # 测试
 pytest -q
@@ -198,7 +224,11 @@ pre-commit install
 pre-commit run --all-files
 ```
 
-CI（GitHub Actions）在 push / PR 时自动运行Ruff静态检查和带branch coverage门禁的Pytest（Python 3.10 / 3.11 / 3.12）。
+CI（GitHub Actions）在Windows和Linux上分别运行Python3.10、3.11、3.12矩阵，先从固定官方wheel
+双重重建并核验派生wheel哈希与payload；随后执行严格锁安装、双`pip check`、MiniRacer运行烟测、
+Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%。Windows+Python3.10job还会
+从零连续重建锁两次并与仓库版本比较；Linux只安装并验证这份规范锁，因为依赖元数据中的平台条件
+（例如`colorama`）会让Linux上的重新解析得到不同但不具规范性的闭包。
 
 ## 常见问题
 

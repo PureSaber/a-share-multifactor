@@ -8,40 +8,74 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Checkout quant-agent
-        uses: actions/checkout@v4
-        with:
-          repository: PureSaber/quant-agent
-          path: quant-agent
-          ref: v0.3.0
-        continue-on-error: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
+      - name: Certify deterministic AKShare derivative
+        run: >-
+          python tools/repack_akshare_wheel.py certify
+          --work-dir .wheel-certification
+          --committed-wheel vendor/wheels/akshare-1.18.88.post1-py3-none-any.whl
+
+      - name: Install locked dependencies
         run: |
-          pip install -e ".[dev]"
-          if [ -d quant-agent ]; then pip install -e "./quant-agent[dev]"; fi
+          python -m pip install --no-deps --requirement requirements.lock
+          python -m pip check
+          python -m pip install --no-deps --no-build-isolation --editable .
+          python -m pip check
+
+      - name: Rebuild Python 3.10 lock twice
+        if: matrix.os == 'windows-latest' && matrix.python-version == '3.10'
+        run: |
+          python tools/rebuild_lock.py
+          git diff --exit-code -- requirements.lock
+          python tools/rebuild_lock.py
+          git diff --exit-code -- requirements.lock
+
+      - name: AKShare MiniRacer runtime smoke
+        run: >-
+          python -c "from importlib.metadata import packages_distributions;
+          import akshare;
+          from py_mini_racer import MiniRacer;
+          owners=packages_distributions().get('py_mini_racer', []);
+          assert owners == ['mini-racer'], owners;
+          assert MiniRacer().eval('1+1') == 2"
 
       - name: Ruff check
-        run: ruff check src tests scripts
+        run: ruff check src tests scripts tools
+
+      - name: Ruff format check
+        run: >-
+          ruff format --check src/a_share_multifactor/run_contract.py
+          tests/test_certified_execution.py tests/test_qf_parity.py
+          tests/test_rebuild_lock.py tests/test_runtime_dependencies.py tests/test_vendor_wheel.py
+          tools/rebuild_lock.py tools/repack_akshare_wheel.py
 
       - name: Pytest
-        run: pytest -q --cov=src/a_share_multifactor --cov-branch --cov-report=term-missing --cov-fail-under=80
+        run: >-
+          pytest -q --cov=src/a_share_multifactor --cov-branch
+          --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=80
 
-      - name: Offline quant-review smoke
-        if: hashFiles('quant-agent/pyproject.toml') != ''
-        run: |
-          quant-review run --project multifactor \
-            --run-dir quant-agent/tests/fixtures/sample_run --offline
+      - name: Enforce certification branch coverage
+        run: >-
+          python -c "import json;
+          from pathlib import Path;
+          report=json.loads(Path('coverage.json').read_text(encoding='utf-8'));
+          candidates=[value for key,value in report['files'].items() if key.replace(chr(92),'/').endswith('/a_share_multifactor/run_contract.py')];
+          assert candidates, 'certification core is missing from coverage JSON';
+          summary=candidates[0]['summary'];
+          covered=summary['covered_branches'];
+          total=summary['num_branches'];
+          assert total and covered/total >= .97, f'run_contract pure branch coverage is {covered}/{total}';
+          print(f'run_contract pure branches: {covered}/{total}={covered/total:.2%}')"
