@@ -1,5 +1,9 @@
 # A-Share Multifactor
 
+本版本`0.4.1`完成M6策略层依赖治理。认证路径消费`standard/v2@2.0.0`，策略只通过
+`Strategy.on_event`产生订单意图，成交、费用、滑点、持仓和NAV继续由统一执行与账本提供；
+本次不改变策略逻辑和历史`standard/v1`语义。
+
 A 股多因子选股研究项目：从 AKShare 拉取行情，计算因子，做 IC 分析、分层回测与散户约束下的组合模拟。
 
 **研究用途**：结果仅供学习研究，不构成投资建议。
@@ -18,12 +22,13 @@ Python · Pandas · Scikit-learn · [**quant-data-kit**](https://github.com/Pure
 | 宏观面 | `industry_rs_20d` | 行业 20 日相对 HS300 强弱 |
 
 ```bash
-# 安装（内部依赖由pyproject.toml锁定不可变tag）
-pip install -e ".[dev]"
+# 安装审计过的运行时、开发和editable构建依赖
+python -m pip install --no-deps --requirement requirements.lock
+python -m pip check
+python -m pip install --no-deps --no-build-isolation --editable .
+python -m pip check
 
-# 本地开发（与 quant-data-kit 同目录时可用 editable）
-# pip install -e ../quant-data-kit[akshare,dev]
-pip install -e ".[dev]"
+# 本地开发已通过上面的no-deps、no-build-isolation方式安装editable项目。
 
 # 拉取含另类数据
 python -m a_share_multifactor.fetch_data --fetch-alt --symbols-limit 10 --verbose
@@ -181,7 +186,26 @@ cash_ledger和margin，并通过`load_and_validate_standard_run`回读验证；`
 `trading_costs.py`和`trade_ledger.py`保留为legacy/research-only，不得用于认证产物。
 fixture目录是版本化、显式、PIT的测试目录，其有效期是认证fixture窗口，不代表标的上市历史。
 认证写出在任何文件落盘前检查Git工作树并对dirty状态fail closed；scored_panel使用与行列顺序无关的canonical SHA-256进入dataset snapshots和lineage，fixture catalog同样以`sha256:`标识，instrument master版本绑定catalog哈希前12位。
-冻结的QExec v0.2.0对非期货费用只提供统一Fee及原始`maker`/`taker`分类；认证路径原样保留该分类，不在产物层拆分commission或stamp_duty。若需要显式费用分类，必须由项目负责人串行修订quant-execution并重新发布冻结tag。
+冻结的QExec`v0.4.1`对非期货费用只提供统一Fee及原始`maker`/`taker`分类；认证路径原样保留该分类，不在产物层拆分commission或stamp_duty。若需要显式费用分类，必须由项目负责人串行修订quant-execution并重新发布冻结tag。
+
+## M6依赖和契约治理
+
+`pyproject.toml`和`requirements.lock`均使用已发布annotatedtag：QDK`v0.6.1`（peeledcommit
+`edf1351690dc60691cc6330390adcdbf8bc79c5f`）、QFactors`v0.2.1`（`c06472b713f15b3cf8078690b33807eba6563a9c`）、
+QExec`v0.4.1`（`29eccc0e392968b5f7c31976a329605aacce369a`）和QLab`v0.3.1`
+（`27489d270e132adbec1bced93eb2ae84ad5e1a9b`）。禁止依赖浮动分支或未发布commit。
+
+锁文件由Python3.10重建，覆盖runtime、dev和editable-build依赖，并在Python3.10、3.11、3.12
+中严格按锁安装验证。重建命令为：
+
+```bash
+pip-compile --extra dev --build-deps-for editable --allow-unsafe --strip-extras \
+  --resolver backtracking --index-url https://pypi.org/simple \
+  --output-file requirements.lock pyproject.toml
+```
+
+迁移只新增不可变`standard/v2`产物，不改写历史v1；回滚使用Git revert同时恢复
+`pyproject.toml`、`requirements.lock`、CI和本文档，再按旧锁重装。旧tag不移动、不覆盖。
 
 ## 开发规范
 

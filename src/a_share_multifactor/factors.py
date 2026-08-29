@@ -1,6 +1,6 @@
 """Factor computation for A-share multi-factor model.
 
-Shared OHLCV factors come from ``quant_factors`` (catalog pin ``0.1.0``).
+Shared OHLCV factors come from ``quant_factors`` (catalog pin ``0.2.1``).
 Local registry keeps multifactor-only columns (northbound, passthrough).
 """
 
@@ -16,7 +16,7 @@ from quant_factors.core import compute_factors as qf_compute
 try:
     QUANT_FACTORS_VERSION = version("quant-factors")
 except PackageNotFoundError:  # pragma: no cover
-    QUANT_FACTORS_VERSION = "0.1.0"
+    QUANT_FACTORS_VERSION = "0.2.1"
 
 FactorFn = Callable[[pd.DataFrame], pd.Series]
 

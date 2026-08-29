@@ -5,6 +5,7 @@ __pycache__/
 dist/
 build/
 .venv/
+.venv*/
 venv/
 .pytest_cache/
 .ipynb_checkpoints/
@@ -22,4 +23,6 @@ _stock_list.json
 .idea/
 .vscode/
 .DS_Store
+.coverage
+coverage-*.json
 Thumbs.db
