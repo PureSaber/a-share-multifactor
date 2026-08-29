@@ -1,4 +1,5 @@
 import subprocess
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +19,7 @@ from a_share_multifactor.run_contract import (
     _position_and_order_frames,
     _replay,
     _returns_frame,
+    _target_schedule,
     _TargetWeightStrategy,
     _write_certified_v2,
     build_instrument_master,
@@ -186,6 +188,86 @@ def test_legacy_v1_frame_builders_remain_read_compatible() -> None:
     assert not positions.empty
     assert set(orders["side"]).issubset({"buy", "sell"})
     assert not exposures.empty
+
+
+def test_empty_rebalance_days_and_zero_lot_targets_are_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    panel = _certified_panel()
+    missing_day = pd.Timestamp("2019-12-31")
+    monkeypatch.setattr(run_contract, "rebalance_dates", lambda *_args: [missing_day])
+    assert _target_schedule(panel, AppConfig()) == {}
+    positions, orders, exposures = _position_and_order_frames(panel, AppConfig())
+    assert positions.empty
+    assert orders.empty
+    assert exposures.empty
+
+    actual_day = pd.Timestamp(panel["date"].min())
+    monkeypatch.setattr(run_contract, "rebalance_dates", lambda *_args: [actual_day])
+    config = AppConfig(costs=replace(AppConfig().costs, initial_capital=1.0))
+    assert _target_schedule(panel, config) == {}
+
+
+def test_replay_fails_closed_when_qexec_omits_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MissingArtifactsEngine:
+        def __init__(self, **_kwargs: object) -> None:
+            self.artifacts = None
+
+        def replay(self, _events: object, *, seed: int) -> object:
+            assert seed == 0
+            return object()
+
+    monkeypatch.setattr(run_contract, "DeterministicRunEngine", MissingArtifactsEngine)
+    with pytest.raises(RuntimeError, match="did not produce artifacts"):
+        _replay(_certified_panel(), AppConfig(), "missing-artifacts")
+
+
+def test_nan_factor_exposure_is_not_published() -> None:
+    panel = _certified_panel()
+    panel["market_cap"] = np.nan
+    replay = _replay(
+        panel,
+        AppConfig(
+            start_date="2020-01-02",
+            end_date="2020-03-06",
+            factors=["market_cap"],
+            quantiles=5,
+            rebalance_freq="monthly",
+        ),
+        "nan-exposure",
+    )
+    assert replay.frames["exposures"].empty
+
+
+def test_empty_turnover_writes_an_empty_legacy_cost_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def capture_standard_run(_run_dir: Path, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(run_contract, "write_standard_run", capture_standard_run)
+    monkeypatch.setattr(run_contract, "_write_certified_v2", lambda *_args: "validated-v2")
+    monkeypatch.setattr(run_contract, "_code_version", lambda _root: "a" * 40)
+    results = SimpleNamespace(
+        turnover=pd.DataFrame(columns=["turnover"]),
+        quantile_returns=pd.DataFrame(),
+        cumulative_returns=pd.DataFrame(),
+        benchmark_returns=pd.Series(dtype=float),
+        stats=pd.DataFrame(),
+    )
+
+    result = run_contract.write_equity_standard_run(
+        tmp_path / "empty-turnover", results, _certified_panel(), AppConfig()
+    )
+
+    assert result == "validated-v2"
+    costs = captured["frames"]["costs"]
+    assert costs.empty
+    assert "total_cost" not in costs
 
 
 def test_code_version_fails_closed_on_dirty_tree(tmp_path: Path) -> None:

@@ -1,0 +1,20 @@
+diff --git a/akshare/_version.py b/akshare/_version.py
+index 450eb28..25fd6ea 100644
+--- a/akshare/_version.py
++++ b/akshare/_version.py
+@@ -1 +1 @@
+-__version__ = "1.18.88"
++__version__ = "1.18.88.post1"
+diff --git a/pyproject.toml b/pyproject.toml
+index 1305a95..2b33eb4 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -50,7 +50,5 @@ dependencies = [
+     "jsonpath>=0.82",
+     "tabulate>=0.8.6",
+     "decorator>=4.4.2",
+-    "mini-racer>=0.12.4; platform_system != 'Linux'",
+-    "py-mini-racer>=0.6.0; platform_system == 'Linux'",
+-    "akracer>=0.0.13; platform_system == 'Linux'",
++    "mini-racer==0.14.1",
+ ]
