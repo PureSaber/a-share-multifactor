@@ -4,6 +4,8 @@
 #
 #    pip-compile --allow-unsafe --build-deps-for=editable --extra=dev --index-url=https://pypi.org/simple --no-index --output-file=requirements.lock --strip-extras pyproject.toml
 #
+akracer==0.0.14
+    # via a-share-multifactor (pyproject.toml)
 akshare==1.18.88
     # via
     #   a-share-multifactor (pyproject.toml)
@@ -66,8 +68,10 @@ lxml==6.1.2
     # via akshare
 matplotlib==3.10.9
     # via a-share-multifactor (pyproject.toml)
-mini-racer==0.14.1
-    # via akshare
+mini-racer==0.14.1 ; platform_system != "Linux"
+    # via
+    #   a-share-multifactor (pyproject.toml)
+    #   akshare
 numpy==2.2.6
     # via
     #   a-share-multifactor (pyproject.toml)
@@ -98,6 +102,8 @@ pluggy==1.6.0
     # via
     #   pytest
     #   pytest-cov
+py-mini-racer==0.6.0
+    # via a-share-multifactor (pyproject.toml)
 pyarrow==25.0.1
     # via
     #   a-share-multifactor (pyproject.toml)
