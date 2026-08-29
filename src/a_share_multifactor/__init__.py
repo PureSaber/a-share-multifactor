@@ -1,6 +1,6 @@
 """A-share multi-factor stock selection."""
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 from a_share_multifactor.config import AppConfig, load_config
 

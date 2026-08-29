@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "a-share-multifactor"
-version = "0.4.0"
+version = "0.4.1"
 description = "A-share multi-factor stock selection research project"
 readme = "README.md"
 license = { text = "MIT" }
@@ -18,10 +18,10 @@ dependencies = [
     "akshare>=1.12",
     "pyarrow>=14.0",
     "matplotlib>=3.8",
-    "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@v0.6.0",
-    "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@v0.2.0",
-    "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@v0.3.0",
-    "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@v0.3.0",
+    "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@v0.6.1",
+    "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@v0.2.1",
+    "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@v0.4.1",
+    "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@v0.3.1",
 ]
 
 [project.optional-dependencies]
@@ -54,6 +54,13 @@ source = ["a_share_multifactor"]
 [tool.coverage.report]
 fail_under = 80
 show_missing = true
+
+[tool.quant-workspace]
+layer = "strategy"
+schemas = [
+    { id = "standard/v2", version = "2.0.0" },
+]
+lock-files = ["requirements.lock"]
 
 [tool.ruff]
 line-length = 100
