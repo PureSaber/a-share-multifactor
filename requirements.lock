@@ -59,7 +59,9 @@ idna==3.19
 iniconfig==2.3.0
     # via pytest
 joblib==1.5.3
-    # via scikit-learn
+    # via
+    #   -c constraints/runtime.txt
+    #   scikit-learn
 jsonpath==0.82.2
     # via akshare
 jsonschema==4.26.0
