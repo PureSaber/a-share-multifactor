@@ -854,7 +854,10 @@ def _write_certified_v2(
         "legacy_modules": ["trading_costs", "trade_ledger"],
         "legacy_modules_are": "research-only",
         "margin_policy": "AShareRule cash account: zero initial and maintenance margin; no aggregate margin replication",
-        "fee_classification": "frozen QExec v0.3 unified maker/taker; commission/stamp classification unavailable",
+        "fee_classification": (
+            f"QExec {_DEPENDENCIES['quant-execution']} unified maker/taker; "
+            "commission/stamp classification unavailable"
+        ),
     }
     write_standard_run_v2(
         run_dir,
