@@ -1,6 +1,6 @@
 # A-Share Multifactor
 
-本版本`0.4.1`完成M6策略层依赖治理。认证路径消费`standard/v2@2.0.0`，策略只通过
+本版本`0.4.2`完成M8运行时发布列车升级。认证路径消费`standard/v2@2.0.0`，策略只通过
 `Strategy.on_event`产生订单意图，成交、费用、滑点、持仓和NAV继续由统一执行与账本提供；
 本次不改变策略逻辑和历史`standard/v1`语义。
 
@@ -186,13 +186,13 @@ cash_ledger和margin，并通过`load_and_validate_standard_run`回读验证；`
 `trading_costs.py`和`trade_ledger.py`保留为legacy/research-only，不得用于认证产物。
 fixture目录是版本化、显式、PIT的测试目录，其有效期是认证fixture窗口，不代表标的上市历史。
 认证写出在任何文件落盘前检查Git工作树并对dirty状态fail closed；scored_panel使用与行列顺序无关的canonical SHA-256进入dataset snapshots和lineage，fixture catalog同样以`sha256:`标识，instrument master版本绑定catalog哈希前12位。
-冻结的QExec`v0.4.1`对非期货费用只提供统一Fee及原始`maker`/`taker`分类；认证路径原样保留该分类，不在产物层拆分commission或stamp_duty。若需要显式费用分类，必须由项目负责人串行修订quant-execution并重新发布冻结tag。
+冻结的QExec`v0.5.1`对非期货费用只提供统一Fee及原始`maker`/`taker`分类；认证路径原样保留该分类，不在产物层拆分commission或stamp_duty。若需要显式费用分类，必须由项目负责人串行修订quant-execution并重新发布冻结tag。
 
 ## M6依赖和契约治理
 
-`pyproject.toml`和`requirements.lock`均使用已发布annotatedtag：QDK`v0.6.1`（peeledcommit
-`edf1351690dc60691cc6330390adcdbf8bc79c5f`）、QFactors`v0.2.1`（`c06472b713f15b3cf8078690b33807eba6563a9c`）、
-QExec`v0.4.1`（`29eccc0e392968b5f7c31976a329605aacce369a`）和QLab`v0.3.1`
+`pyproject.toml`和`requirements.lock`均使用已发布annotatedtag：QDK`v0.8.1`（peeledcommit
+`8f258f11be8e4d8edddcd41b79b817bd6c925970`）、QFactors`v0.3.0`（`fb60fcbe30cf7012ca1def0eecab4e77a43c94a7`）、
+QExec`v0.5.1`（`15e4e5c9dbaf2fe9b438732b2e94db295d5ea58c`）和QLab`v0.3.1`
 （`27489d270e132adbec1bced93eb2ae84ad5e1a9b`）。禁止依赖浮动分支或未发布commit。
 
 锁文件由规范环境Windows+Python3.10和固定`pip-tools==7.6.1`重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的

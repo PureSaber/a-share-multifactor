@@ -44,10 +44,10 @@ _STRATEGY_ID = "a-share-multifactor-qexec"
 _ACCOUNT_ID = "a-share-multifactor-account"
 _MONEY_SCALE = 8
 _DEPENDENCIES = {
-    "quant-data-kit": "v0.6.1",
-    "quant-execution": "v0.4.1",
+    "quant-data-kit": "v0.8.1",
+    "quant-execution": "v0.5.1",
     "quant-lab": "v0.3.1",
-    "quant-factors": "v0.2.1",
+    "quant-factors": "v0.3.0",
 }
 _V2_COLUMNS = {
     "returns": [
@@ -726,7 +726,7 @@ def _replay(scored_panel: pd.DataFrame, config: AppConfig, run_id: str) -> Certi
         for item in artifacts.fills
     ]
     fills_by_id = {fill.fill_id: fill for fill in artifacts.fills}
-    # QExec v0.4.1 exposes one unified Fee per non-futures fill.  Preserve its
+    # QExec v0.5.1 exposes one unified Fee per non-futures fill.  Preserve its
     # native maker/taker taxonomy; the adapter must not manufacture a second
     # commission/stamp-duty fee model or relabel the certified artifact.
     cost_rows = [
@@ -854,7 +854,10 @@ def _write_certified_v2(
         "legacy_modules": ["trading_costs", "trade_ledger"],
         "legacy_modules_are": "research-only",
         "margin_policy": "AShareRule cash account: zero initial and maintenance margin; no aggregate margin replication",
-        "fee_classification": "frozen QExec v0.3 unified maker/taker; commission/stamp classification unavailable",
+        "fee_classification": (
+            f"QExec {_DEPENDENCIES['quant-execution']} unified maker/taker; "
+            "commission/stamp classification unavailable"
+        ),
     }
     write_standard_run_v2(
         run_dir,
@@ -875,7 +878,7 @@ def _write_certified_v2(
         random_seed=0,
         dataset_snapshots=snapshots,
         instrument_master_version=(f"a-share-fixture-catalog-v1@sha256:{catalog_sha256[:12]}"),
-        execution_model_version="quant-execution-v0.4.1-bar-replay-v1",
+        execution_model_version="quant-execution-v0.5.1-bar-replay-v1",
         base_currency="CNY",
         lineage=lineage,
         capabilities=["backtest", "deterministic-replay", "pit", "t-plus-one"],
