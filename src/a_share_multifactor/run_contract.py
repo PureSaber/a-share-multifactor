@@ -1,15 +1,13 @@
-"""Research v1 compatibility and the certified QExec backtest-ledger path.
-
-The legacy writer remains for historical standard/v1 readers. New certification
-artifacts are produced only from one DeterministicRunEngine replay.
-"""
+"""One configured QExec replay for account facts and user-facing result views."""
 
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.metadata
 import json
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
@@ -19,22 +17,25 @@ import numpy as np
 import pandas as pd
 from quant_data_kit import AssetClass, BarEvent, FixedPoint, InstrumentSpec, SymbolMapping
 from quant_execution import (
-    BarMatchingModel,
     DeterministicBroker,
     DeterministicRunEngine,
     ExactAccountLedger,
     OrderIntent,
     OrderType,
-    RuleBookRiskGate,
     Side,
     StrategyContext,
     TimeInForce,
 )
 from quant_lab import load_and_validate_standard_run, write_standard_run_v2
-from quant_lab.contracts import RunManifest, write_standard_run
+from quant_lab.contracts import RunManifest
 
 from a_share_multifactor.calendar import rebalance_dates
 from a_share_multifactor.config import AppConfig
+from a_share_multifactor.execution_models import (
+    ConfiguredAShareRiskGate,
+    ConfiguredBarMatchingModel,
+)
+from a_share_multifactor.performance import return_statistics
 from a_share_multifactor.quantile_backtest import BacktestResult, _assign_quantiles
 
 _CATALOG_PATH = (
@@ -203,6 +204,22 @@ def _code_version(repo_root: Path) -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True).strip()
 
 
+def _installed_internal_dependencies() -> dict[str, str]:
+    revisions = {}
+    for name in _DEPENDENCIES:
+        package = importlib.import_module(name.replace("-", "_"))
+        root = Path(package.__file__).resolve().parents[2]
+        if (root / ".git").exists():
+            revisions[name] = _code_version(root)
+        else:
+            distribution = importlib.metadata.distribution(name)
+            direct = json.loads(distribution.read_text("direct_url.json") or "{}")
+            revisions[name] = (
+                direct.get("vcs_info", {}).get("commit_id") or f"v{distribution.version}"
+            )
+    return revisions
+
+
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -328,12 +345,18 @@ def build_instrument_master(
                 "lot_size": row["lot_size"],
                 "commission_rate": row["commission_rate"],
                 "stamp_duty_rate": row["stamp_duty_rate"],
-                "catalog_scope": "fixture-certified-not-listing-history",
+                "catalog_scope": (
+                    "fixture-certified-not-listing-history"
+                    if catalog_path == _CATALOG_PATH
+                    else "declared-watchlist-rules-not-listing-history"
+                ),
             },
         )
         mappings.append(
             SymbolMapping(
-                source="fixture-certified",
+                source="fixture-certified"
+                if catalog_path == _CATALOG_PATH
+                else "declared-watchlist",
                 provider_symbol=symbol,
                 instrument_id=symbol,
                 effective_from=effective_from,
@@ -353,17 +376,17 @@ def _build_events(panel: pd.DataFrame, specs: dict[str, InstrumentSpec]) -> tupl
         symbol = str(row["symbol"])
         scale = specs[symbol].price_tick.scale
         day = pd.Timestamp(row["date"]).date()
-        timestamp = _utc(day) + pd.Timedelta(hours=8, microseconds=int(index))
-        bar_end = timestamp + pd.Timedelta(minutes=1)
-        volume = max(1, int(Decimal(str(row.get("volume", 1))).to_integral_value()))
+        timestamp = _utc(day) + pd.Timedelta(hours=1, minutes=30)
+        bar_end = _utc(day) + pd.Timedelta(hours=7, microseconds=int(index))
+        volume = max(0, int(Decimal(str(row.get("volume", 0))).to_integral_value()))
         events.append(
             BarEvent(
-                event_id=f"fixture-bar:{day.isoformat()}:{symbol}",
+                event_id=f"daily-bar:{day.isoformat()}:{symbol}",
                 instrument_id=symbol,
                 event_time=bar_end.to_pydatetime(),
                 received_at=bar_end.to_pydatetime(),
                 available_at=bar_end.to_pydatetime(),
-                source="fixture-certified",
+                source=str(row.get("source", "fixture-certified")),
                 trading_day=day,
                 session_id=f"CN-A-SHARE:{day.isoformat()}",
                 sequence=index,
@@ -380,8 +403,10 @@ def _build_events(panel: pd.DataFrame, specs: dict[str, InstrumentSpec]) -> tupl
     return tuple(events)
 
 
-def _target_schedule(panel: pd.DataFrame, config: AppConfig) -> dict[date, dict[str, int]]:
-    catalog = load_fixture_catalog().set_index("symbol")
+def _target_schedule(
+    panel: pd.DataFrame, config: AppConfig, *, catalog_path: Path = _CATALOG_PATH
+) -> dict[date, dict[str, int]]:
+    catalog = load_fixture_catalog(catalog_path).set_index("symbol")
     schedule: dict[date, dict[str, int]] = {}
     for rebalance_date in rebalance_dates(panel["date"], config.rebalance_freq):
         day = panel[pd.to_datetime(panel["date"]) == pd.Timestamp(rebalance_date)].copy()
@@ -390,11 +415,15 @@ def _target_schedule(panel: pd.DataFrame, config: AppConfig) -> dict[date, dict[
         day["composite_score"] = pd.to_numeric(day["composite_score"], errors="coerce")
         day["quantile"] = _assign_quantiles(day["composite_score"], config.quantiles)
         selected = day[day["quantile"] == float(config.quantiles)]
-        if selected.empty:
-            selected = day.nlargest(1, "composite_score")
-        selected = selected.dropna(subset=["close"])
+        selected = selected.dropna(subset=["close", "composite_score"])
+        if config.costs.max_holdings > 0:
+            selected = selected.nlargest(config.costs.max_holdings, "composite_score")
         allocation = (
-            Decimal(str(config.costs.initial_capital)) / len(selected)
+            Decimal(str(config.costs.initial_capital))
+            * min(
+                Decimal(str(1 - config.costs.cash_buffer)) / len(selected),
+                Decimal(str(config.costs.max_position_weight)),
+            )
             if len(selected)
             else Decimal(0)
         )
@@ -402,7 +431,11 @@ def _target_schedule(panel: pd.DataFrame, config: AppConfig) -> dict[date, dict[
         for _, row in selected.sort_values("symbol").iterrows():
             symbol = str(row["symbol"])
             lot = int(catalog.loc[symbol, "lot_size"])
-            shares = int((allocation / Decimal(str(row["close"]))) // lot) * lot
+            budget = max(Decimal(0), allocation - Decimal(str(config.costs.min_commission)))
+            unit_cost = Decimal(str(row["close"])) * Decimal(
+                str((1 + config.costs.slippage) * (1 + config.costs.commission))
+            )
+            shares = int((budget / unit_cost) // lot) * lot
             if shares > 0:
                 target[symbol] = shares
         if target:
@@ -415,60 +448,98 @@ class _TargetWeightStrategy:
 
     sends_live_orders = False
 
-    def __init__(self, schedule: dict[date, dict[str, int]]) -> None:
+    def __init__(
+        self,
+        schedule: dict[date, dict[str, int]],
+        ledger=None,
+        trigger_symbols=None,
+        risk_limits=None,
+        blocked_dates=None,
+        initial_capital=0,
+    ) -> None:
         self.schedule = schedule
+        self.ledger = ledger
+        self.trigger_symbols = trigger_symbols or {}
+        self.risk_limits = risk_limits or {}
+        self.blocked_dates = blocked_dates or set()
+        self.initial_capital = initial_capital
         self.reset()
 
     def reset(self) -> None:
-        self._planned: dict[str, int] = {}
-        self._pending: dict[str, tuple[Side, int]] = {}
-        self._deferred_buys: dict[str, int] = {}
-        self._day: date | None = None
+        self._deferred_targets = {}
+        self._peak_nav = float(self.initial_capital)
+        self._closing_prices = {}
+
+    def capture_state(self):
+        return {
+            "deferred_targets": self._deferred_targets.copy(),
+            "peak_nav": self._peak_nav,
+            "closing_prices": self._closing_prices.copy(),
+        }
+
+    def restore_state(self, state):
+        self._deferred_targets = state["deferred_targets"].copy()
+        self._peak_nav = state["peak_nav"]
+        self._closing_prices = state["closing_prices"].copy()
 
     def on_event(self, context: StrategyContext, event: BarEvent) -> tuple[OrderIntent, ...]:
-        if event.trading_day != self._day:
-            self._day = event.trading_day
-            self._pending = {
-                symbol: (Side.BUY, quantity) for symbol, quantity in self._deferred_buys.items()
-            }
-            self._deferred_buys = {}
-            target = self.schedule.get(event.trading_day)
-            if target is not None:
-                sells: dict[str, int] = {}
-                buys: dict[str, int] = {}
-                for symbol in sorted(set(self._planned) | set(target)):
-                    delta = target.get(symbol, 0) - self._planned.get(symbol, 0)
-                    if delta:
-                        if delta > 0:
-                            buys[symbol] = delta
-                        else:
-                            sells[symbol] = abs(delta)
-                self._pending.update(
-                    {symbol: (Side.SELL, quantity) for symbol, quantity in sells.items()}
-                )
-                if sells:
-                    self._deferred_buys.update(buys)
-                else:
-                    self._pending.update(
-                        {symbol: (Side.BUY, quantity) for symbol, quantity in buys.items()}
-                    )
-                self._planned = dict(target)
-        pending = self._pending.pop(event.instrument_id, None)
-        if pending is None:
+        if self.ledger is None:
             return ()
-        side, quantity = pending
-        return (
+        self._closing_prices[event.instrument_id] = event.close_price
+        return self._after_close(context, event)
+
+    def _after_close(self, context, event):
+        # Wait until ALL symbols' bars and outstanding fills for this session
+        # have reached the ledger. Per-symbol early snapshots double-counted
+        # still-pending buys when daily rebalancing coincided with their fills.
+        if event.instrument_id != self.trigger_symbols.get(event.trading_day):
+            return ()
+        snapshot = self.ledger.snapshot(event.available_at)
+        nav = float(_decimal(snapshot.nav))
+        self._peak_nav = max(self._peak_nav, nav)
+        if event.trading_day in self.blocked_dates:
+            return ()
+        if self._peak_nav and 1 - nav / self._peak_nav > self.risk_limits.get("max_drawdown", 1):
+            self._deferred_targets = {}
+            return ()
+        target = self.schedule.get(event.trading_day, self._deferred_targets)
+        if not target:
+            return ()
+        if nav <= 0:
+            return ()
+        for symbol, quantity in target.items():
+            # QExec exposes exact positions/marks; reserve some concentration
+            # headroom in the profile to allow ordinary price changes.
+            mark = self._closing_prices.get(symbol)
+            if mark is not None and quantity * float(_decimal(mark)) / nav > self.risk_limits.get(
+                "max_single_weight", 1
+            ):
+                self._deferred_targets = {}
+                return ()
+        current = {
+            symbol: int(_decimal(quantity))
+            for symbol, quantity in self.ledger.snapshot(event.available_at).positions.items()
+        }
+        delta = {
+            symbol: target.get(symbol, 0) - current.get(symbol, 0)
+            for symbol in sorted(set(target) | set(current))
+        }
+        sells = {symbol: quantity for symbol, quantity in delta.items() if quantity < 0}
+        self._deferred_targets = dict(target) if sells else {}
+        trades = sells or {symbol: quantity for symbol, quantity in delta.items() if quantity > 0}
+        return tuple(
             OrderIntent(
-                idempotency_key=f"{context.strategy_id}:{event.trading_day.isoformat()}:{event.instrument_id}:{side.value}",
+                idempotency_key=f"{context.strategy_id}:{event.trading_day}:{symbol}:{'buy' if quantity > 0 else 'sell'}",
                 account_id=context.account_id,
                 strategy_id=context.strategy_id,
-                instrument_id=event.instrument_id,
-                side=side,
-                quantity=FixedPoint(quantity, 0),
+                instrument_id=symbol,
+                side=Side.BUY if quantity > 0 else Side.SELL,
+                quantity=FixedPoint(abs(quantity), 0),
                 order_type=OrderType.MARKET,
-                time_in_force=TimeInForce.GTC,
+                time_in_force=TimeInForce.IOC,
                 created_at=event.available_at,
-            ),
+            )
+            for symbol, quantity in trades.items()
         )
 
 
@@ -532,10 +603,45 @@ def _frame(name: str, rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=_V2_COLUMNS[name])
 
 
-def _replay(scored_panel: pd.DataFrame, config: AppConfig, run_id: str) -> CertifiedReplay:
-    instruments, mappings = build_instrument_master(scored_panel)
+def _replay(
+    scored_panel: pd.DataFrame,
+    config: AppConfig,
+    run_id: str,
+    *,
+    catalog_path: Path = _CATALOG_PATH,
+    risk_limits: dict | None = None,
+) -> CertifiedReplay:
+    if config.costs.retail_mode:
+        raise ValueError(
+            "QExec replay does not support retail early-exit/min-holding rules; "
+            "use the explicit daily/weekly decision profile (retail_mode=false)"
+        )
+    costs = config.costs
+    if "adjustment" in scored_panel and not scored_panel["adjustment"].eq("none").all():
+        raise ValueError("Execution requires unadjusted traded prices (adjustment=none)")
+    if (
+        min(costs.commission, costs.min_commission, costs.stamp_tax) < 0
+        or not 0 <= costs.cash_buffer < 1
+        or not 0 < costs.max_position_weight <= 1
+        or costs.initial_capital <= 0
+    ):
+        raise ValueError("Invalid execution costs or allocation limits")
+    instruments, mappings = build_instrument_master(scored_panel, catalog_path=catalog_path)
+    instruments = {
+        symbol: replace(
+            spec,
+            metadata={
+                **spec.metadata,
+                "commission_rate": str(costs.commission),
+                "stamp_duty_rate": str(
+                    costs.stamp_tax if spec.asset_class is AssetClass.EQUITY else 0
+                ),
+                "min_commission": str(costs.min_commission),
+            },
+        )
+        for symbol, spec in instruments.items()
+    }
     events = _build_events(scored_panel, instruments)
-    strategy = _TargetWeightStrategy(_target_schedule(scored_panel, config))
     ledger = _RecordingLedger(
         account_id=_ACCOUNT_ID,
         base_currency="CNY",
@@ -543,14 +649,30 @@ def _replay(scored_panel: pd.DataFrame, config: AppConfig, run_id: str) -> Certi
         initial_cash={"CNY": _fixed(config.costs.initial_capital, 2)},
         money_scale=_MONEY_SCALE,
     )
+    strategy = _TargetWeightStrategy(
+        _target_schedule(scored_panel, config, catalog_path=catalog_path),
+        ledger=ledger,
+        trigger_symbols={event.trading_day: event.instrument_id for event in events},
+        risk_limits=risk_limits,
+        initial_capital=costs.initial_capital,
+        blocked_dates=set(
+            pd.to_datetime(
+                scored_panel.loc[~scored_panel["decision_allowed"].astype(bool), "date"]
+            ).dt.date
+        )
+        if "decision_allowed" in scored_panel
+        else set(),
+    )
     engine = DeterministicRunEngine(
         run_id=run_id,
         account_id=_ACCOUNT_ID,
         strategy_id=_STRATEGY_ID,
         strategy=strategy,
         broker=DeterministicBroker(),
-        risk_gate=RuleBookRiskGate(instruments=instruments, ledger=ledger),
-        matching_model=BarMatchingModel(instruments, participation_rate="1"),
+        risk_gate=ConfiguredAShareRiskGate(instruments=instruments, ledger=ledger),
+        matching_model=ConfiguredBarMatchingModel(
+            instruments, slippage=costs.slippage, participation_rate=costs.participation_rate
+        ),
         ledger=ledger,
     )
     result = engine.replay(events, seed=0)
@@ -587,10 +709,7 @@ def _replay(scored_panel: pd.DataFrame, config: AppConfig, run_id: str) -> Certi
             spec = instruments[instrument_id]
             mark = mark_by_time.get(event_time, {}).get(instrument_id)
             if mark is None:
-                mark = _fixed(
-                    snapshot.cost_basis.get(instrument_id, FixedPoint(1, spec.price_tick.scale)),
-                    spec.price_tick.scale,
-                )
+                raise ValueError(f"Missing market mark for open position: {instrument_id}")
             notional = _decimal(quantity) * _decimal(mark) * _decimal(spec.contract_multiplier)
             market_value += notional
             base_value = _fixed(notional, _MONEY_SCALE)
@@ -771,7 +890,7 @@ def _replay(scored_panel: pd.DataFrame, config: AppConfig, run_id: str) -> Certi
             )
     exposure_rows: list[dict[str, Any]] = []
     factor_cols = [factor for factor in config.factors if factor in scored_panel.columns]
-    for rebalance_date in sorted(_target_schedule(scored_panel, config)):
+    for rebalance_date in sorted(_target_schedule(scored_panel, config, catalog_path=catalog_path)):
         day = scored_panel[pd.to_datetime(scored_panel["date"]).dt.date == rebalance_date]
         event_time = next(
             event.available_at for event in events if event.trading_day == rebalance_date
@@ -812,6 +931,21 @@ def _replay(scored_panel: pd.DataFrame, config: AppConfig, run_id: str) -> Certi
         ),
         "margin": _frame("margin", sorted(margin_rows, key=lambda row: row["event_time"])),
     }
+    # Portfolio snapshots retain every event; returns have one observation per
+    # completed trading day so downstream consumers do not annualize symbols as
+    # if they were separate days. Both come from the same recorded ledger.
+    returns = frames["returns"]
+    if not returns.empty:
+        days = (
+            pd.to_datetime(returns["event_time"], utc=True)
+            .dt.tz_convert("Asia/Shanghai")
+            .dt.normalize()
+        )
+        daily = returns.groupby(days, sort=True).tail(1).copy()
+        for column in ("net_return", "gross_return"):
+            compounded = (1 + returns[column]).groupby(days, sort=True).prod() - 1
+            daily[column] = compounded.to_numpy()
+        frames["returns"] = daily.reset_index(drop=True)
     return CertifiedReplay(result, events, instruments, mappings, ledger, frames)
 
 
@@ -820,12 +954,20 @@ def _write_certified_v2(
     scored_panel: pd.DataFrame,
     config: AppConfig,
     dataset_snapshots: dict[str, str] | None,
+    *,
+    replay: CertifiedReplay | None = None,
+    catalog_path: Path = _CATALOG_PATH,
+    research_metrics: dict | None = None,
+    internal_dependencies: dict[str, str] | None = None,
 ) -> Any:
-    replay = _replay(scored_panel, config, run_dir.name)
+    replay = replay or _replay(scored_panel, config, run_dir.name, catalog_path=catalog_path)
     snapshots = dict(dataset_snapshots or {})
-    catalog_sha256 = _file_sha256(_CATALOG_PATH)
+    catalog_sha256 = _file_sha256(catalog_path)
+    catalog_key = (
+        "fixture-catalog-v1" if catalog_path == _CATALOG_PATH else "watchlist-rule-assumptions-v1"
+    )
     certified_snapshots = {
-        "fixture-catalog-v1": f"sha256:{catalog_sha256}",
+        catalog_key: f"sha256:{catalog_sha256}",
         "scored-panel-v1": f"sha256:{_canonical_frame_sha256(scored_panel)}",
     }
     for name, digest in certified_snapshots.items():
@@ -833,7 +975,7 @@ def _write_certified_v2(
         if existing is not None and existing != digest:
             raise ValueError(f"dataset snapshot conflict for {name}")
         snapshots[name] = digest
-    certified_inputs = ["dataset:fixture-catalog-v1", "dataset:scored-panel-v1"]
+    certified_inputs = [f"dataset:{catalog_key}", "dataset:scored-panel-v1"]
     lineage = {
         "config": certified_inputs,
         "metrics": certified_inputs,
@@ -858,6 +1000,8 @@ def _write_certified_v2(
             f"QExec {_DEPENDENCIES['quant-execution']} unified maker/taker; "
             "commission/stamp classification unavailable"
         ),
+        "cost_policy": "configured proportional commission plus per-order minimum, sell stamp tax, adverse slippage",
+        "evidence_scope": "deterministic simulation; not historical market-data or investment certification",
     }
     write_standard_run_v2(
         run_dir,
@@ -871,17 +1015,21 @@ def _write_certified_v2(
             "orders": len(replay.frames["orders"]),
             "fills": len(replay.frames["fills"]),
             "certification": "single DeterministicRunEngine -> RuleBookRiskGate -> ExactAccountLedger replay",
+            "backtest_stats": json.loads(
+                replay_results(replay, config).stats.to_json(orient="records")
+            ),
+            **(research_metrics or {}),
         },
         config=config_payload,
         code_version=_code_version(Path(__file__).resolve().parents[2]),
-        internal_dependencies=_DEPENDENCIES,
+        internal_dependencies=internal_dependencies or _installed_internal_dependencies(),
         random_seed=0,
         dataset_snapshots=snapshots,
-        instrument_master_version=(f"a-share-fixture-catalog-v1@sha256:{catalog_sha256[:12]}"),
-        execution_model_version="quant-execution-v0.5.1-bar-replay-v1",
+        instrument_master_version=(f"a-share-explicit-catalog@sha256:{catalog_sha256[:12]}"),
+        execution_model_version="a-share-configured-qexec-next-bar-v2",
         base_currency="CNY",
         lineage=lineage,
-        capabilities=["backtest", "deterministic-replay", "pit", "t-plus-one"],
+        capabilities=["backtest", "deterministic-replay", "t-plus-one"],
         tags={
             "asset_class": "cn-a-share-and-etf",
             "certification": "qexec",
@@ -889,6 +1037,38 @@ def _write_certified_v2(
         },
     )
     return load_and_validate_standard_run(run_dir)
+
+
+def replay_results(replay: CertifiedReplay, config: AppConfig) -> BacktestResult:
+    """Daily marks and every performance number come from the same exact ledger."""
+    frame = replay.frames["returns"].sort_values("event_time").copy()
+    frame["date"] = (
+        pd.to_datetime(frame["event_time"], utc=True)
+        .dt.tz_convert("Asia/Shanghai")
+        .dt.tz_localize(None)
+        .dt.normalize()
+    )
+    closes = frame.groupby("date", sort=True).tail(1).set_index("date")
+    nav = pd.Series(
+        [
+            float(Decimal(int(row.nav_units)).scaleb(-int(row.nav_scale)))
+            for row in closes.itertuples()
+        ],
+        index=closes.index,
+        dtype=float,
+    )
+    returns = nav.pct_change(fill_method=None)
+    if len(nav):
+        returns.iloc[0] = nav.iloc[0] / config.costs.initial_capital - 1
+    name = f"Q{config.quantiles}"
+    return BacktestResult(
+        quantile_returns=pd.DataFrame({name: returns}),
+        cumulative_returns=pd.DataFrame({name: nav / config.costs.initial_capital}),
+        long_short=pd.Series(dtype=float),
+        # The first observed close is the account's opening anchor, not a
+        # completed return interval. Keep it in NAV exports but not annualization.
+        stats=pd.DataFrame([{"portfolio": name, **return_statistics(returns.iloc[1:], 252)}]),
+    )
 
 
 def _returns_frame(results: BacktestResult, config: AppConfig) -> pd.DataFrame:
@@ -986,49 +1166,57 @@ def write_equity_standard_run(
     *,
     dataset_snapshots: dict[str, str] | None = None,
 ) -> RunManifest | Any:
-    """Write legacy v1 plus certified v2, then validate the preferred v2 manifest."""
-    positions, orders, exposures = _position_and_order_frames(scored_panel, config)
-    turnover = (
-        results.turnover.reset_index()
-        if not results.turnover.empty
-        else pd.DataFrame(columns=["date", "turnover"])
-    )
-    costs = pd.DataFrame(
-        {
-            "date": turnover.get("date", pd.Series(dtype="object")),
-            "strategy": f"Q{config.quantiles}",
-            "symbol": "__portfolio__",
-            "commission": turnover.get("turnover", pd.Series(dtype=float))
-            * 2
-            * config.costs.commission,
-            "slippage": turnover.get("turnover", pd.Series(dtype=float))
-            * 2
-            * config.costs.slippage,
-            "market_impact": 0.0,
-            "borrow_cost": 0.0,
-        }
-    )
-    if not costs.empty:
-        costs["total_cost"] = costs[["commission", "slippage"]].sum(axis=1)
-    write_standard_run(
+    """Publish one execution result; all user-facing views use its daily NAV.
+
+    Legacy multi-quantile calculations remain research helpers, but no longer
+    produce a contradictory standard/v1 account beside the exact v2 ledger.
+    """
+    import shutil
+
+    from a_share_multifactor.report import write_html_report
+
+    replay = _replay(scored_panel, config, run_dir.name)
+    research_metrics = {}
+    for name in ("ic_summary", "ic_decay"):
+        path = run_dir / f"{name}.csv"
+        if path.exists():
+            research_metrics[name] = json.loads(pd.read_csv(path).to_json(orient="records"))
+    manifest = _write_certified_v2(
         run_dir,
-        project="a-share-multifactor",
-        run_id=run_dir.name,
-        strategy=f"Q{config.quantiles}",
-        frames={
-            "returns": _returns_frame(results, config),
-            "positions": positions,
-            "orders": orders,
-            "costs": costs,
-            "exposures": exposures,
-        },
-        metrics={
-            "statistics": results.stats.to_dict(orient="records"),
-            "periods": len(results.quantile_returns),
-        },
-        config=asdict(config),
-        code_version=_code_version(Path(__file__).resolve().parents[2]),
-        dataset_snapshots=dataset_snapshots,
-        tags={"asset_class": "cn_equity", "research_type": "legacy-research"},
+        scored_panel,
+        config,
+        dataset_snapshots,
+        replay=replay,
+        research_metrics=research_metrics,
     )
-    return _write_certified_v2(run_dir, scored_panel, config, dataset_snapshots)
+    canonical = replay_results(replay, config)
+    results.__dict__.update(canonical.__dict__)
+    results.quantile_returns.to_csv(run_dir / "quantile_returns.csv")
+    results.cumulative_returns.to_csv(run_dir / "cumulative_returns.csv")
+    results.stats.to_csv(run_dir / "backtest_stats.csv", index=False)
+    # Preserve legacy research views explicitly, not as the account's returns.
+    for name in ("long_short.csv", "excess_returns.csv", "turnover.csv"):
+        old = run_dir / name
+        if old.exists():
+            old.rename(run_dir / f"legacy_research_{name}")
+    ic = pd.DataFrame(research_metrics.get("ic_summary", []))
+    write_html_report(
+        results,
+        ic,
+        run_dir / "report.html",
+        "QExec configured next-bar simulation; daily ledger NAV; research only",
+    )
+    latest = run_dir.parent / "latest"
+    latest.mkdir(parents=True, exist_ok=True)
+    for name in ("long_short.csv", "excess_returns.csv", "turnover.csv"):
+        legacy_view = latest / name
+        if legacy_view.exists():
+            legacy_view.unlink()  # Current run's research copy is preserved above.
+    for name in (
+        "quantile_returns.csv",
+        "cumulative_returns.csv",
+        "backtest_stats.csv",
+        "report.html",
+    ):
+        shutil.copy2(run_dir / name, latest / name)
+    return manifest

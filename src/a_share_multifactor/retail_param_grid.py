@@ -15,6 +15,7 @@ import pandas as pd
 from a_share_multifactor.calendar import trade_schedule_dates
 from a_share_multifactor.config import AppConfig, load_config
 from a_share_multifactor.data_loader import build_dataset
+from a_share_multifactor.performance import return_statistics
 from a_share_multifactor.preprocess import prepare_factor_panel
 from a_share_multifactor.synthesis import synthesize
 from a_share_multifactor.synthesis_compare import capital_curve_from_returns
@@ -115,18 +116,13 @@ def _stats_from_returns(
             "trade_periods": 0,
         }
 
-    periods_per_year = {"daily": 252, "weekly": 52, "monthly": 12}[trade_freq]
+    # simulate_daily_retail_portfolio marks NAV daily, even on a weekly schedule.
+    periods_per_year = 252
     capital = capital_curve_from_returns(clean, initial_capital)
-    mean_ret = float(clean.mean())
-    vol = float(clean.std(ddof=0))
-    ann_return = (1 + mean_ret) ** periods_per_year - 1
-    ann_vol = vol * np.sqrt(periods_per_year) if vol > 0 else float("nan")
-    sharpe = ann_return / ann_vol if ann_vol and not np.isnan(ann_vol) else float("nan")
     return {
         "final_capital": float(capital.iloc[-1]),
         "total_return_pct": float((capital.iloc[-1] / initial_capital - 1) * 100),
-        "ann_return": ann_return,
-        "sharpe": sharpe,
+        **return_statistics(clean, periods_per_year),
         "trade_periods": len(clean),
     }
 

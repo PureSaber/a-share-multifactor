@@ -8,6 +8,7 @@ from sklearn.linear_model import LinearRegression, Ridge
 from a_share_multifactor.calendar import score_schedule_dates
 from a_share_multifactor.config import AppConfig
 from a_share_multifactor.ic_analysis import calc_ic_series, summarize_ic
+from a_share_multifactor.label_timing import label_available_at
 
 
 def equal_weight_score(panel: pd.DataFrame, factor_cols: list[str]) -> pd.DataFrame:
@@ -94,9 +95,12 @@ def rolling_ic_weight_score(
     )
     if min_score_date is not None:
         dates = dates[dates >= pd.Timestamp(min_score_date)]
+    available_at = label_available_at(result, return_col, date_col)
     for current_date in dates:
         lookback_start = pd.Timestamp(current_date) - pd.DateOffset(months=lookback_months)
-        hist = result[(result[date_col] >= lookback_start) & (result[date_col] < current_date)]
+        cutoff = pd.to_datetime(current_date, utc=True)
+        hist = result[(result[date_col] >= lookback_start) & (result[date_col] < current_date)
+                      & available_at.lt(cutoff)]
         if hist.empty:
             continue
 
@@ -142,9 +146,12 @@ def rolling_ml_score(
     if min_score_date is not None:
         dates = dates[dates >= pd.Timestamp(min_score_date)]
 
+    available_at = label_available_at(result, return_col, date_col)
     for current_date in dates:
         lookback_start = pd.Timestamp(current_date) - pd.DateOffset(months=lookback_months)
-        hist = result[(result[date_col] >= lookback_start) & (result[date_col] < current_date)]
+        cutoff = pd.to_datetime(current_date, utc=True)
+        hist = result[(result[date_col] >= lookback_start) & (result[date_col] < current_date)
+                      & available_at.lt(cutoff)]
         train = hist[available + [return_col]].dropna()
         if len(train) < len(available) + 5:
             continue
@@ -173,12 +180,9 @@ def synthesize(
     """Apply configured synthesis method."""
     factor_cols = [col for col in config.factors if col in panel.columns]
 
-    if config.synthesis.method == "ic_weight":
-        if ic_summary is None:
-            raise ValueError("ic_summary is required for ic_weight synthesis")
-        return ic_weight_score(panel, factor_cols, ic_summary)
-
-    if config.synthesis.method == "rolling_ic_weight":
+    # A whole-evaluation-window IC report is descriptive, never a training input.
+    # Keep the old config name as a causal rolling alias for compatibility.
+    if config.synthesis.method in {"ic_weight", "rolling_ic_weight"}:
         score_dates = score_schedule_dates(
             panel["date"],
             config.rebalance_freq,

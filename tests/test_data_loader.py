@@ -110,8 +110,11 @@ def test_fetch_fundamentals_akshare_column_names() -> None:
         "pb_ratio",
         "report_date",
         "available_at",
+        "availability_basis",
     ]
     assert fundamentals["pb_ratio"].tolist() == [2.0, 2.1]
+    assert fundamentals["available_at"].isna().all()
+    assert fundamentals["availability_basis"].eq("unknown").all()
 
 
 def test_merge_price_fundamentals(sample_prices, sample_fundamentals) -> None:

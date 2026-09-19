@@ -42,6 +42,7 @@ asm-backtest = "a_share_multifactor.backtest:main"
 asm-grid-search = "a_share_multifactor.grid_search:main"
 asm-compare = "a_share_multifactor.synthesis_compare:main"
 asm-retail-grid = "a_share_multifactor.retail_param_grid:main"
+asm-decision = "a_share_multifactor.decision_workflow:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -11,7 +11,7 @@ def test_rolling_ml_score_ridge() -> None:
         rows.append({"date": day, "f1": -1.0, "f2": -0.5, "forward_return_20d": -0.02})
     panel = pd.DataFrame(rows)
     result = rolling_ml_score(
-        panel, ["f1", "f2"], "forward_return_20d", method="ridge", lookback_months=1
+        panel, ["f1", "f2"], "forward_return_20d", method="ridge", lookback_months=2
     )
     assert result["composite_score"].notna().any()
 

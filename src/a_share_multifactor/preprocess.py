@@ -59,11 +59,24 @@ def add_forward_return(
     price_col: str = "close",
     symbol_col: str = "symbol",
 ) -> pd.DataFrame:
-    """Add forward return column over *window* trading days."""
+    """Add a forward label and the endpoint at which it becomes observable."""
+    if window < 1:
+        raise ValueError("forward return window must be positive")
     result = df.copy()
+    result["date"] = pd.to_datetime(result["date"])
+    if result.duplicated([symbol_col, "date"]).any():
+        raise ValueError("forward labels require unique symbol/date rows")
+    result = result.sort_values([symbol_col, "date"])
     col_name = f"forward_return_{window}d"
     result[col_name] = result.groupby(symbol_col)[price_col].transform(
         lambda s: s.shift(-window) / s - 1
+    )
+    result[f"{col_name}_label_end_at"] = result.groupby(symbol_col)["date"].shift(-window)
+    # Daily bars are usable after the endpoint close. Training uses strictly
+    # earlier dates, so a same-day midnight cannot make the label available early.
+    availability = "available_at" if "available_at" in result else "date"
+    result[f"{col_name}_label_available_at"] = result.groupby(symbol_col)[availability].shift(
+        -window
     )
     return result
 
