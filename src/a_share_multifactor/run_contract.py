@@ -469,18 +469,21 @@ class _TargetWeightStrategy:
         self._deferred_targets = {}
         self._peak_nav = float(self.initial_capital)
         self._closing_prices = {}
+        self._risk_halted = False
 
     def capture_state(self):
         return {
             "deferred_targets": self._deferred_targets.copy(),
             "peak_nav": self._peak_nav,
             "closing_prices": self._closing_prices.copy(),
+            "risk_halted": self._risk_halted,
         }
 
     def restore_state(self, state):
         self._deferred_targets = state["deferred_targets"].copy()
         self._peak_nav = state["peak_nav"]
         self._closing_prices = state["closing_prices"].copy()
+        self._risk_halted = state["risk_halted"]
 
     def on_event(self, context: StrategyContext, event: BarEvent) -> tuple[OrderIntent, ...]:
         if self.ledger is None:
@@ -500,6 +503,8 @@ class _TargetWeightStrategy:
         if event.trading_day in self.blocked_dates:
             return ()
         if self._peak_nav and 1 - nav / self._peak_nav > self.risk_limits.get("max_drawdown", 1):
+            self._risk_halted = True
+        if self._risk_halted:
             self._deferred_targets = {}
             return ()
         target = self.schedule.get(event.trading_day, self._deferred_targets)

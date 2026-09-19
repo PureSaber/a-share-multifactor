@@ -178,3 +178,77 @@ def test_corporate_action_window_remains_blocked(setup_decision, tmp_path):
     assert card["status"] == "blocked"
     assert "Corporate-action" in card["reasons"][0]
     assert not (output / "paper_state.json").exists()
+
+
+@pytest.mark.parametrize("change", ["code", "dependency", "legacy"])
+def test_account_cannot_rewrite_history_with_changed_execution(
+    setup_decision, tmp_path, monkeypatch, change
+):
+    config, output = setup_decision
+    inputs = tmp_path / "inputs"
+    dates, _ = _inputs(inputs)
+    _run(config, output, inputs, dates)
+    state_path = output / "paper_state.json"
+    if change == "code":
+        monkeypatch.setattr(flow, "_code_version", lambda *_: "b" * 40)
+    elif change == "dependency":
+        monkeypatch.setattr(flow, "_dependency_revisions", lambda: {"quant-data-kit": "b" * 40})
+    else:
+        state = json.loads(state_path.read_text())
+        del state["execution_identity"]
+        flow._save_json(state_path, state)
+    original_state = state_path.read_bytes()
+    run = flow.run_decision(
+        config,
+        output,
+        inputs=inputs,
+        now=dates[79].tz_localize("Asia/Shanghai") + pd.Timedelta(hours=18),
+    )
+    card = json.loads((run / "decision.json").read_text())
+    assert card["status"] == "blocked" and "code/dependencies" in card["reasons"][0]
+    assert not card["proposed_trades"]
+    assert state_path.read_bytes() == original_state
+    assert json.loads((output / "latest.json").read_text())["status"] == "blocked"
+
+
+def test_dependency_provenance_supports_installed_distributions(monkeypatch):
+    # Installed VCS dependencies are wheels, not sibling Git checkouts.
+    monkeypatch.setattr(flow, "_installed_internal_dependencies", lambda: {"quant-lab": "a" * 40})
+    assert flow._dependency_revisions() == {"quant-lab": "a" * 40}
+
+
+@pytest.mark.parametrize("count", [0, 100000])
+def test_invalid_replay_window_replaces_old_actionable_card(setup_decision, tmp_path, count):
+    config, output = setup_decision
+    settings = yaml.safe_load(config.read_text())
+    settings["simulation_sessions"] = count
+    config.write_text(yaml.safe_dump(settings))
+    inputs = tmp_path / "inputs"
+    dates, _ = _inputs(inputs)
+    output.mkdir()
+    flow._save_json(output / "latest.json", {"status": "paper_ready"})
+    run = _run(config, output, inputs, dates)
+    card = json.loads((run / "decision.json").read_text())
+    assert card["status"] == "blocked" and "simulation_sessions" in card["reasons"][0]
+    assert json.loads((output / "latest.json").read_text())["status"] == "blocked"
+
+
+@pytest.mark.parametrize("problem", ["missing", "malformed", "empty", "unsupported"])
+def test_config_refresh_failure_cannot_leave_an_old_buy_card(setup_decision, problem):
+    config, output = setup_decision
+    output.mkdir()
+    flow._save_json(output / "latest.json", {"status": "paper_ready"})
+    if problem == "missing":
+        config.unlink()
+    elif problem == "malformed":
+        config.write_text("app: [invalid")
+    elif problem == "empty":
+        config.write_text("")
+    else:
+        settings = yaml.safe_load(config.read_text())
+        settings["frequency"] = "unsupported"
+        config.write_text(yaml.safe_dump(settings))
+    run = flow.run_decision(config, output, now=pd.Timestamp("2025-04-30T09:00:00Z"))
+    card = json.loads((run / "decision.json").read_text())
+    assert card["status"] == "blocked" and card["proposed_trades"] == []
+    assert json.loads((output / "latest.json").read_text())["status"] == "blocked"

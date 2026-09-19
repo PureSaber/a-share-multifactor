@@ -47,8 +47,8 @@ def main() -> int:
         )
 
     previous = OUTPUT.read_bytes() if OUTPUT.exists() else None
-    if OUTPUT.exists():
-        OUTPUT.unlink()
+    # Retain pip-compile's existing version preferences. A dependency-source
+    # repair must not silently upgrade unrelated registry packages.
     environment = os.environ.copy()
     environment["CUSTOM_COMPILE_COMMAND"] = DISPLAY_COMMAND
     command = (sys.executable, "-m", "piptools", "compile", *PIP_COMPILE_ARGUMENTS)

@@ -191,10 +191,12 @@ fixture目录是版本化、显式、PIT的测试目录，其有效期是认证f
 
 ## M6依赖和契约治理
 
-`pyproject.toml`和`requirements.lock`均使用已发布annotatedtag：QDK`v0.8.1`（peeledcommit
-`8f258f11be8e4d8edddcd41b79b817bd6c925970`）、QFactors`v0.3.0`（`fb60fcbe30cf7012ca1def0eecab4e77a43c94a7`）、
-QExec`v0.5.1`（`15e4e5c9dbaf2fe9b438732b2e94db295d5ea58c`）和QLab`v0.3.1`
-（`27489d270e132adbec1bced93eb2ae84ad5e1a9b`）。禁止依赖浮动分支或未发布commit。
+本研究修复分支的`pyproject.toml`和`requirements.lock`固定到包含修复的不可变提交：
+QDK `8fed47b8f62694c36830dec270cfa21759133f2f`、QLab `c8d73813fe6a631a21811182804b3e3b857839d8`。
+QFactors 固定 `9aa58fd1263165c130c5ccb8b873bfc713c470cd`，
+QExec 固定 `476d2014b2ac3de88d03a9e2009edf561a60eafa`；这两项仅同步 QDK 引用及锁文件。
+这是一组开发版本依赖，不使用浮动分支；旧发布标签不修改。默认安装和 CI 均包含此次修复，
+不再依靠本地相邻仓库覆盖来通过测试。正式发布仍需完成对应仓库的发布流程。
 
 锁文件由规范环境Windows+Python3.10和固定`pip-tools==7.6.1`重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
 Notebook工具不进入CI的dev闭包，需要时单独安装`.[notebook]`。并在Python3.10、3.11、3.12

@@ -1,20 +1,23 @@
 # 日／周频真实数据研究与模拟决策
 
-这个开发版本联合使用 `quant-data-kit`、`quant-lab` 和 `a-share-multifactor` 的
-`codex/research-decision-reliability` 分支。尚未替代冻结发布标签，不宣称 L2 数据 GA 或投资有效性认证。
+这个开发版本使用包含修复的 `quant-data-kit` 和 `quant-lab` 不可变提交。
+尚未替代冻结发布标签，不宣称 L2 数据 GA 或投资有效性认证。
 
 ## 安装与运行
 
-三个仓库需并列放置。在已安装 `requirements.lock` 基础依赖的虚拟环境中执行：
+在当前仓库和新的虚拟环境中安装锁定依赖，无需相邻仓库：
 
 ```powershell
-python tools/install_research_workspace.py
+python -m pip install --no-deps -r requirements.lock
+python -m pip install --no-deps --no-build-isolation -e .
+python -m pip check
 python -m a_share_multifactor.decision_workflow --config configs/decision_watchlist.yaml
 ```
 
-本次交付工作区使用 `../.venv/Scripts/python.exe`。安装脚本仅覆盖三个本地包，
-不会将旧的冻结依赖标签误认为包含此次修复。运行前提交这些本地源码修改；
-产物记录实际 Git commit，脏工作树会阻断正式产物。
+仅在跨仓库开发时才需要将三个仓库并列放置并执行 `tools/install_research_workspace.py`。
+运行前提交本地源码修改；产物记录实际 Git commit（已安装依赖读取发行元数据），
+脏工作树会阻断正式产物。`paper_state.json` 同时固定策略和内部依赖版本，
+版本变更或旧账户未记录版本时拒绝续跑，需要新建实验输出目录。
 
 默认观察名单是四只沪深主板股票，用于验证数据和工作流，不代表推荐持有。
 账户为 10 万元虚拟账户，不读取真实持仓。初始模拟时点是第一次捕获的收盘，
@@ -24,6 +27,9 @@ python -m a_share_multifactor.decision_workflow --config configs/decision_watchl
 信号和行情，并用新交易日数据推进同一 QExec 模拟账本。若中途漏跑，只盯市并处理此前已记录
 的待模拟订单，不补造漏跑日的信号。配置改变需使用新的输出目录，形成独立实验。
 同一账户只允许一个写入进程。
+
+账户一旦触发最大回撤上限，本实验停止生成新订单；净值随后恢复也不会自动重启。
+这一状态与决策卡使用的历史最大回撤口径一致。
 
 ```powershell
 # 重放已经捕获的真实输入，不联网。过期决策只输出 observe。

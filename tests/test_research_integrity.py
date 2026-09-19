@@ -155,6 +155,36 @@ def test_strategy_without_account_and_insolvent_account_cannot_emit_orders():
     assert strategy.capture_state() == state
 
 
+def test_drawdown_halt_survives_recovery_and_checkpoint_restore():
+    from types import SimpleNamespace
+
+    from quant_data_kit import FixedPoint
+
+    from a_share_multifactor.run_contract import _TargetWeightStrategy
+
+    day = pd.Timestamp("2025-01-02").date()
+    account = SimpleNamespace(nav=FixedPoint(90, 0), positions={})
+    ledger = SimpleNamespace(snapshot=lambda _: account)
+    strategy = _TargetWeightStrategy(
+        {day: {"A": 1}},
+        ledger=ledger,
+        trigger_symbols={day: "A"},
+        initial_capital=100,
+        risk_limits={"max_drawdown": 0.05},
+    )
+    event = SimpleNamespace(
+        trading_day=day, instrument_id="A", available_at=None, close_price=FixedPoint(10, 0)
+    )
+    context = SimpleNamespace(strategy_id="s", account_id="a")
+    assert strategy.on_event(context, event) == ()
+    state = strategy.capture_state()
+    strategy.reset()
+    strategy.restore_state(state)
+    account.nav = FixedPoint(110, 0)
+    assert strategy.on_event(context, event) == ()
+    assert strategy.capture_state()["risk_halted"]
+
+
 def test_empty_account_results_do_not_manufacture_performance():
     from types import SimpleNamespace
 

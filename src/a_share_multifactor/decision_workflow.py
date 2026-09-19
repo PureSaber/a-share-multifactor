@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib
 import json
 import subprocess
 import sys
@@ -30,6 +29,7 @@ from a_share_multifactor.preprocess import prepare_factor_panel
 from a_share_multifactor.research_validation import run_research_validation
 from a_share_multifactor.run_contract import (
     _code_version,
+    _installed_internal_dependencies,
     _replay,
     _write_certified_v2,
     replay_results,
@@ -173,12 +173,7 @@ def write_watchlist_catalog(root: Path, settings: dict, start: str, end: str) ->
 
 
 def _dependency_revisions() -> dict[str, str]:
-    versions = {}
-    for name in ("quant_data_kit", "quant_execution", "quant_factors", "quant_lab"):
-        package = importlib.import_module(name)
-        root = Path(package.__file__).resolve().parents[2]
-        versions[name.replace("_", "-")] = _code_version(root)
-    return versions
+    return _installed_internal_dependencies()
 
 
 def _paper_proposal(replay, scored, config, catalog_path, as_of):
@@ -275,17 +270,6 @@ def _run_decision(
     inputs: Path | None = None,
     now: pd.Timestamp | None = None,
 ) -> Path:
-    settings = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    config = _dict_to_config(settings["app"])
-    config = replace(
-        config,
-        universe="explicit_watchlist",
-        filters=replace(config.filters, use_historical_universe=False),
-    )
-    if config.costs.retail_mode or config.synthesis.method != "equal_weight":
-        raise ValueError("The first decision profile uses fixed equal weights and QExec simulation")
-    if settings["frequency"] not in {"daily", "weekly"} or not config.validation.enabled:
-        raise ValueError("Decision profile requires daily/weekly frequency and validation")
     now = now or pd.Timestamp(datetime.now(timezone.utc))
     local = now.tz_convert("Asia/Shanghai")
     cutoff = pd.Timestamp(as_of).normalize() if as_of else local.tz_localize(None).normalize()
@@ -297,16 +281,6 @@ def _run_decision(
     run_dir = output_root.resolve() / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     config_path = config_path.resolve()
-    config_digest = sha256(config_path)
-    _save_json(
-        run_dir / "experiment.json",
-        {
-            "run_id": run_id,
-            "config_sha256": sha256(config_path),
-            "settings": settings,
-            "selection": "predeclared; no parameter search or return ranking",
-        },
-    )
     card = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -321,15 +295,50 @@ def _run_decision(
         "targets": [],
         "proposed_trades": [],
         "estimated_cost": {},
-        "risk": settings["risk"],
+        "risk": {},
         "evidence": {},
         "reasons": [],
     }
     try:
+        settings = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(settings, dict) or not isinstance(settings.get("app"), dict):
+            raise TypeError("Decision configuration requires an app mapping")
+        config = _dict_to_config(settings["app"])
+        config = replace(
+            config,
+            universe="explicit_watchlist",
+            filters=replace(config.filters, use_historical_universe=False),
+        )
+        card["risk"] = settings["risk"]
+        config_digest = sha256(config_path)
+        _save_json(
+            run_dir / "experiment.json",
+            {
+                "run_id": run_id,
+                "config_sha256": config_digest,
+                "settings": settings,
+                "selection": "predeclared; no parameter search or return ranking",
+            },
+        )
+        if config.costs.retail_mode or config.synthesis.method != "equal_weight":
+            raise ValueError(
+                "The first decision profile uses fixed equal weights and QExec simulation"
+            )
+        if settings["frequency"] not in {"daily", "weekly"} or not config.validation.enabled:
+            raise ValueError("Decision profile requires daily/weekly frequency and validation")
+        identity = {
+            "code_version": _code_version(Path(__file__).resolve().parents[2]),
+            "internal_dependencies": _dependency_revisions(),
+        }
+        card["evidence"].update(identity)
         state_path = output_root.resolve() / "paper_state.json"
         prior = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else None
         if prior and prior["config_sha256"] != config_digest:
             raise ValueError("Paper configuration changed; start a separate output directory/trial")
+        if prior and prior.get("execution_identity") != identity:
+            raise ValueError(
+                "Paper code/dependencies changed or are unrecorded; start a separate trial"
+            )
         source_root = inputs.resolve() if inputs else run_dir / "inputs"
         start = (cutoff - pd.Timedelta(days=settings.get("history_days", 730))).date().isoformat()
         if not inputs:
@@ -388,6 +397,8 @@ def _run_decision(
         # Default forward account starts at the first observed close. Optional
         # retrospective replay is explicit and keeps the corporate-action guard.
         count = int(settings.get("simulation_sessions", 1))
+        if not 1 <= count <= len(sessions):
+            raise ValueError("simulation_sessions must be positive and within available history")
         simulation_start = pd.Timestamp(prior["start"]) if prior else sessions[-count]
         simulation = scored[scored.date >= simulation_start].copy()
         simulation["decision_allowed"] = True
@@ -484,7 +495,7 @@ def _run_decision(
                 "ic_decay": json.loads(decay.to_json(orient="records")),
                 "research_validation": clean_json(card["validation"]),
             },
-            internal_dependencies=_dependency_revisions(),
+            internal_dependencies=identity["internal_dependencies"],
         )
         standard = run_dir / "standard" / "v2" / "run_manifest.json"
         card["evidence"].update(
@@ -492,7 +503,7 @@ def _run_decision(
                 "standard_manifest": str(standard),
                 "standard_manifest_sha256": sha256(standard),
                 "scored_panel": "standard/v2/config.json dataset lineage",
-                "code_version": _code_version(Path(__file__).resolve().parents[2]),
+                "code_version": identity["code_version"],
             }
         )
         results.quantile_returns.to_csv(run_dir / "net_returns.csv")
@@ -556,13 +567,22 @@ def _run_decision(
                     "as_of": card["as_of"],
                     "first_observed_asof": prior["first_observed_asof"] if prior else card["as_of"],
                     "config_sha256": config_digest,
+                    "execution_identity": identity,
                     "scored_panel": str(run_dir / "scored_panel.parquet"),
                     "scored_panel_sha256": sha256(run_dir / "scored_panel.parquet"),
                     "observations": card["validation"]["forward_signal_observations"],
                 },
             )
             state_temp.replace(state_path)
-    except (ValueError, RuntimeError, KeyError, OSError, subprocess.TimeoutExpired) as exc:
+    except (
+        ValueError,
+        TypeError,
+        RuntimeError,
+        KeyError,
+        OSError,
+        yaml.YAMLError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         card["status"] = "blocked"
         card["targets"] = []
         card["proposed_trades"] = []
