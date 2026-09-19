@@ -15,6 +15,7 @@ from quant_factors.validation import (
 )
 
 from a_share_multifactor.config import AppConfig
+from a_share_multifactor.label_timing import mature_labels
 
 
 @dataclass
@@ -72,7 +73,11 @@ def run_research_validation(
     for split in splits:
         train_dates = dates[split.train_indices]
         test_dates = dates[split.test_indices]
-        train = panel[panel["date"].isin(train_dates)]
+        train = panel[
+            panel["date"].isin(train_dates) & mature_labels(panel, target_col, test_dates[0])
+        ]
+        if train.empty:
+            raise ValueError("No mature training labels before validation fold")
         test = panel[panel["date"].isin(test_dates)].copy()
         signed_scores: list[pd.Series] = []
         for factor in factors:

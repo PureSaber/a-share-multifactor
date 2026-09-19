@@ -82,7 +82,7 @@ def test_run_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(results, BacktestResult)
     assert not ic_report.empty
     assert output_dir.exists()
-    assert (output_dir / "standard" / "run_manifest.json").exists()
+    assert not (output_dir / "standard" / "run_manifest.json").exists()
     certified_dir = output_dir / "standard" / "v2"
     assert (certified_dir / "run_manifest.json").exists()
     assert all(

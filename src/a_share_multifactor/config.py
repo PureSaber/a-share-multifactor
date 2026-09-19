@@ -95,6 +95,9 @@ class CostsConfig:
     early_exit_consecutive_daily: float = 0.03
     early_exit_cumulative_return: float = 0.25
     rank_change_threshold: int = 0
+    participation_rate: float = 0.1
+    cash_buffer: float = 0.02
+    max_position_weight: float = 1.0
 
 
 @dataclass
@@ -304,6 +307,9 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
             rank_change_threshold=int(
                 costs_raw.get("rank_change_threshold", defaults.costs.rank_change_threshold)
             ),
+            participation_rate=float(costs_raw.get("participation_rate", defaults.costs.participation_rate)),
+            cash_buffer=float(costs_raw.get("cash_buffer", defaults.costs.cash_buffer)),
+            max_position_weight=float(costs_raw.get("max_position_weight", defaults.costs.max_position_weight)),
         ),
         fetch=FetchConfig(
             max_workers=int(fetch_raw.get("max_workers", defaults.fetch.max_workers)),

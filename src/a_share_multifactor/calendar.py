@@ -20,6 +20,8 @@ def weekly_dates(dates: pd.Series) -> pd.DatetimeIndex:
 def rebalance_dates(dates: pd.Series, freq: str) -> pd.DatetimeIndex:
     """Return rebalance dates from available trading dates."""
     series = pd.to_datetime(dates).drop_duplicates().sort_values()
+    if freq == "daily":
+        return trading_dates(dates)
     if freq == "monthly":
         grouped = series.groupby(series.dt.to_period("M"))
         return pd.DatetimeIndex(grouped.max().values)

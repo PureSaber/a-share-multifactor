@@ -241,33 +241,31 @@ def test_nan_factor_exposure_is_not_published() -> None:
     assert replay.frames["exposures"].empty
 
 
-def test_empty_turnover_writes_an_empty_legacy_cost_frame(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    captured: dict[str, object] = {}
+def test_public_views_use_the_same_replay(tmp_path, monkeypatch):
+    from a_share_multifactor.run_contract import replay_results
 
-    def capture_standard_run(_run_dir: Path, **kwargs: object) -> None:
+    captured = {}
+    config = AppConfig()
+    panel = _certified_panel()
+    replay = _replay(panel, config, "views")
+    monkeypatch.setattr(run_contract, "_replay", lambda *_a, **_k: replay)
+
+    def publish(*_args, **kwargs):
         captured.update(kwargs)
+        return "validated-v2"
 
-    monkeypatch.setattr(run_contract, "write_standard_run", capture_standard_run)
-    monkeypatch.setattr(run_contract, "_write_certified_v2", lambda *_args: "validated-v2")
-    monkeypatch.setattr(run_contract, "_code_version", lambda _root: "a" * 40)
-    results = SimpleNamespace(
-        turnover=pd.DataFrame(columns=["turnover"]),
-        quantile_returns=pd.DataFrame(),
-        cumulative_returns=pd.DataFrame(),
-        benchmark_returns=pd.Series(dtype=float),
-        stats=pd.DataFrame(),
-    )
-
-    result = run_contract.write_equity_standard_run(
-        tmp_path / "empty-turnover", results, _certified_panel(), AppConfig()
-    )
-
-    assert result == "validated-v2"
-    costs = captured["frames"]["costs"]
-    assert costs.empty
-    assert "total_cost" not in costs
+    monkeypatch.setattr(run_contract, "_write_certified_v2", publish)
+    results = replay_results(replay, config)
+    run = tmp_path / "views"
+    run.mkdir()
+    (run / "long_short.csv").write_text("date,long_short\n2020-01-01,42\n", encoding="utf-8")
+    assert run_contract.write_equity_standard_run(run, results, panel, config) == "validated-v2"
+    assert captured["replay"] is replay
+    actual = pd.read_csv(run / "quantile_returns.csv", index_col=0)
+    assert actual.iloc[-1, 0] == pytest.approx(results.quantile_returns.iloc[-1, 0])
+    assert not (run / "standard" / "run_manifest.json").exists()
+    assert (run / "legacy_research_long_short.csv").exists()
+    assert not (run / "long_short.csv").exists()
 
 
 def test_code_version_fails_closed_on_dirty_tree(tmp_path: Path) -> None:
@@ -283,6 +281,49 @@ def test_code_version_fails_closed_on_dirty_tree(tmp_path: Path) -> None:
     tracked.write_text("dirty\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="clean Git worktree"):
         _code_version(tmp_path)
+
+
+def test_installed_dependency_provenance_uses_wheel_commit_or_release(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        run_contract.importlib,
+        "import_module",
+        lambda _: SimpleNamespace(
+            __file__=str(tmp_path / "site-packages" / "package" / "__init__.py")
+        ),
+    )
+    monkeypatch.setattr(
+        run_contract.importlib.metadata,
+        "distribution",
+        lambda _: SimpleNamespace(version="1.2.3", read_text=lambda _: None),
+    )
+    assert set(run_contract._installed_internal_dependencies().values()) == {"v1.2.3"}
+    monkeypatch.setattr(
+        run_contract.importlib.metadata,
+        "distribution",
+        lambda _: SimpleNamespace(
+            version="1.2.3", read_text=lambda _: '{"vcs_info":{"commit_id":"' + "a" * 40 + '"}}'
+        ),
+    )
+    assert set(run_contract._installed_internal_dependencies().values()) == {"a" * 40}
+
+
+@pytest.mark.parametrize("corruption", ["missing_mark", "unexpected_margin"])
+def test_account_facts_reject_missing_marks_and_margin(corruption, monkeypatch):
+    from quant_data_kit import FixedPoint
+
+    original = run_contract._RecordingLedger.recorded_snapshots.fget
+
+    def corrupted(ledger):
+        snapshots = list(original(ledger))
+        if corruption == "missing_mark":
+            snapshots[0] = replace(snapshots[0], positions={"000005": FixedPoint(100, 0)})
+        else:
+            snapshots[0] = replace(snapshots[0], initial_margin=FixedPoint(1, 0))
+        return tuple(snapshots)
+
+    monkeypatch.setattr(run_contract._RecordingLedger, "recorded_snapshots", property(corrupted))
+    with pytest.raises(ValueError, match="Missing market mark|zero margin"):
+        _replay(_certified_panel(), AppConfig(), "corrupt-account")
 
 
 def test_certified_replay_is_deterministic_and_emits_execution_facts() -> None:
@@ -311,6 +352,7 @@ def test_certified_replay_is_deterministic_and_emits_execution_facts() -> None:
     assert len(replays[0].frames["fills"]) > 0
     assert len(replays[0].frames["costs"]) > 0
     assert len(replays[0].frames["cash_ledger"]) > 0
+    assert len(replays[0].frames["returns"]) == panel.date.nunique()
     assert (replays[0].frames["fills"]["instrument_id"] == "510300").any()
     assert set(replays[0].frames["costs"]["cost_type"]) == {"taker"}
     assert set(replays[0].frames) == {

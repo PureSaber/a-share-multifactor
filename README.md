@@ -1,8 +1,9 @@
 # A-Share Multifactor
 
-本版本`0.4.2`完成M8运行时发布列车升级。认证路径消费`standard/v2@2.0.0`，策略只通过
-`Strategy.on_event`产生订单意图，成交、费用、滑点、持仓和NAV继续由统一执行与账本提供；
-本次不改变策略逻辑和历史`standard/v1`语义。
+当前开发分支基于 `0.4.2`，修复研究时间泄漏、收益口径和执行成本接线，并新增真实公开数据到
+日／周频模拟决策卡的入口。账户事实统一采用 `standard/v2@2.0.0`，不再输出另一份不同策略的 v1 账本。
+该分支尚未发版，需联合安装修订后的 `quant-data-kit`、`quant-lab`；
+使用方法、证据边界和旧配置迁移见 [研究与决策工作流](docs/research-decision-workflow.md)。
 
 A 股多因子选股研究项目：从 AKShare 拉取行情，计算因子，做 IC 分析、分层回测与散户约束下的组合模拟。
 
@@ -190,10 +191,12 @@ fixture目录是版本化、显式、PIT的测试目录，其有效期是认证f
 
 ## M6依赖和契约治理
 
-`pyproject.toml`和`requirements.lock`均使用已发布annotatedtag：QDK`v0.8.1`（peeledcommit
-`8f258f11be8e4d8edddcd41b79b817bd6c925970`）、QFactors`v0.3.0`（`fb60fcbe30cf7012ca1def0eecab4e77a43c94a7`）、
-QExec`v0.5.1`（`15e4e5c9dbaf2fe9b438732b2e94db295d5ea58c`）和QLab`v0.3.1`
-（`27489d270e132adbec1bced93eb2ae84ad5e1a9b`）。禁止依赖浮动分支或未发布commit。
+本研究修复分支的`pyproject.toml`和`requirements.lock`固定到包含修复的不可变提交：
+QDK `8fed47b8f62694c36830dec270cfa21759133f2f`、QLab `c8d73813fe6a631a21811182804b3e3b857839d8`。
+QFactors 固定 `9aa58fd1263165c130c5ccb8b873bfc713c470cd`，
+QExec 固定 `476d2014b2ac3de88d03a9e2009edf561a60eafa`；这两项仅同步 QDK 引用及锁文件。
+这是一组开发版本依赖，不使用浮动分支；旧发布标签不修改。默认安装和 CI 均包含此次修复，
+不再依靠本地相邻仓库覆盖来通过测试。正式发布仍需完成对应仓库的发布流程。
 
 锁文件由规范环境Windows+Python3.10和固定`pip-tools==7.6.1`重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
 Notebook工具不进入CI的dev闭包，需要时单独安装`.[notebook]`。并在Python3.10、3.11、3.12
@@ -246,3 +249,8 @@ Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%�
 
 - 因子投资核心概念（IC、IR、分层回测）
 - 使用 Python 量化库进行 A 股因子研究的方法论
+# 日／周频决策开发入口
+
+本地联合开发版本已增加真实公开数据到模拟决策卡的入口，详见
+[研究可信度与决策工作流](docs/research-decision-workflow.md)。需要同时安装修订后的
+`quant-data-kit` 与 `quant-lab`；冻结发布标签尚不包含这些变更。

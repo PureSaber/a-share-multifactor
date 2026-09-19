@@ -9,6 +9,7 @@ import pandas as pd
 
 from a_share_multifactor.calendar import rebalance_dates, trade_schedule_dates
 from a_share_multifactor.config import AppConfig
+from a_share_multifactor.performance import return_statistics
 from a_share_multifactor.trading_costs import (
     estimate_leg_rebalance_cost,
     portfolio_value,
@@ -115,7 +116,7 @@ def _empty_backtest_result() -> BacktestResult:
 def _periods_per_year(config: AppConfig, *, daily: bool = False) -> int:
     if daily:
         return 252
-    return 12 if config.rebalance_freq == "monthly" else 252
+    return {"daily": 252, "weekly": 52, "monthly": 12}[config.rebalance_freq]
 
 
 def _portfolio_stats_row(
@@ -123,18 +124,7 @@ def _portfolio_stats_row(
     periods_per_year: int,
     portfolio: str,
 ) -> dict[str, float | str]:
-    mean_ret = float(series.mean())
-    vol = float(series.std(ddof=0))
-    ann_return = (1 + mean_ret) ** periods_per_year - 1
-    ann_vol = vol * np.sqrt(periods_per_year) if vol > 0 else float("nan")
-    sharpe = ann_return / ann_vol if ann_vol and not np.isnan(ann_vol) else float("nan")
-    return {
-        "portfolio": portfolio,
-        "mean_return": mean_ret,
-        "ann_return": ann_return,
-        "ann_vol": ann_vol,
-        "sharpe": sharpe,
-    }
+    return {"portfolio": portfolio, **return_statistics(series, periods_per_year)}
 
 
 def _build_excess_returns(

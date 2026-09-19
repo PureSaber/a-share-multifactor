@@ -179,6 +179,7 @@ def run_pipeline(
         validation_result=validation_result,
         run_metadata=run_metadata,
     )
+    ic_decay.to_csv(run_dir / "ic_decay.csv", index=False)
     write_equity_standard_run(
         run_dir,
         results,
@@ -252,6 +253,7 @@ def main() -> None:
         validation_result=validation_result,
         run_metadata=run_metadata,
     )
+    ic_decay.to_csv(run_dir / "ic_decay.csv", index=False)
     write_equity_standard_run(
         run_dir,
         results,

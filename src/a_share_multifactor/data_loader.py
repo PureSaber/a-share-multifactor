@@ -72,7 +72,9 @@ def merge_price_fundamentals(
                 "PIT fundamentals require available_at; refresh the cache with quant-data-kit>=0.3"
             )
         fund["available_at"] = fund["date"]
-    fund["available_at"] = pd.to_datetime(fund["available_at"]).dt.normalize()
+    fund["available_at"] = pd.to_datetime(fund["available_at"])
+    if pit and require_availability_timestamp and fund["available_at"].isna().any():
+        raise ValueError("PIT fundamentals require known publication timestamps; found unknown availability")
     if fundamental_lag_days > 0:
         fund["available_at"] = fund["available_at"] + pd.Timedelta(days=fundamental_lag_days)
 

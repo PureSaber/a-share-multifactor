@@ -8,14 +8,18 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from a_share_multifactor.config import AppConfig, load_config
 from a_share_multifactor.data_loader import build_dataset, load_benchmark_returns
 from a_share_multifactor.ic_analysis import analyze_factors
+from a_share_multifactor.performance import return_statistics
 from a_share_multifactor.preprocess import prepare_factor_panel
-from a_share_multifactor.quantile_backtest import run_long_only_backtest, run_quantile_backtest
+from a_share_multifactor.quantile_backtest import (
+    _periods_per_year,
+    run_long_only_backtest,
+    run_quantile_backtest,
+)
 from a_share_multifactor.synthesis import synthesize
 from a_share_multifactor.trade_ledger import (
     build_trade_ledger,
@@ -72,17 +76,10 @@ def _stats_from_returns(
             "rebalance_periods": 0,
         }
     capital = capital_curve_from_returns(clean, initial_capital)
-    mean_ret = float(clean.mean())
-    vol = float(clean.std(ddof=0))
-    ann_return = (1 + mean_ret) ** periods_per_year - 1
-    ann_vol = vol * np.sqrt(periods_per_year) if vol > 0 else float("nan")
-    sharpe = ann_return / ann_vol if ann_vol and not np.isnan(ann_vol) else float("nan")
     return {
         "final_capital": float(capital.iloc[-1]),
         "total_return_pct": float((capital.iloc[-1] / initial_capital - 1) * 100),
-        "ann_return": ann_return,
-        "ann_vol": ann_vol,
-        "sharpe": sharpe,
+        **return_statistics(clean, periods_per_year),
         "rebalance_periods": len(clean),
     }
 
@@ -117,7 +114,11 @@ def run_synthesis_comparison(
     capital_frames: list[pd.DataFrame] = []
     stats_rows: list[dict[str, object]] = []
     ledgers: dict[str, pd.DataFrame] = {}
-    periods_per_year = 252 if trial_config.costs.trade_freq == "daily" else 12
+    periods_per_year = _periods_per_year(
+        trial_config,
+        daily=long_only and trial_config.costs.retail_mode
+        and trial_config.costs.trade_freq in {"daily", "weekly"},
+    )
 
     for method in SYNTHESIS_METHODS:
         logger.info("Running synthesis method: %s", method)
