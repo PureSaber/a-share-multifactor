@@ -86,6 +86,13 @@ def test_forward_account_freezes_signals_and_advances_the_same_ledger(setup_deci
     assert card["validation"]["forward_observation_days"] == 0
     assert card["current_positions"] == []
     assert card["proposed_trades"]
+    assert card["risk"]["rebalance_frequency"] == "daily"
+    assert "early_exit_enabled" not in card["risk"]["allocation"]
+    for trade in card["proposed_trades"]:
+        assert trade["estimated_execution_price"] >= trade["reference_close"] * 1.001
+        assert trade["estimated_slippage"] == pytest.approx(
+            (trade["estimated_execution_price"] - trade["reference_close"]) * trade["quantity"]
+        )
     manifest = load_and_validate_standard_run(run)
     assert manifest.profile == "backtest-ledger"
     metrics = json.loads((run / "standard/v2/metrics.json").read_text(encoding="utf-8"))

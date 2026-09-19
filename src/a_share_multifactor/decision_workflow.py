@@ -14,6 +14,7 @@ import subprocess
 import sys
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 
 import numpy as np
@@ -181,6 +182,11 @@ def _dependency_revisions() -> dict[str, str]:
 
 
 def _paper_proposal(replay, scored, config, catalog_path, as_of):
+    ticks = (
+        pd.read_csv(catalog_path, dtype={"symbol": str, "price_tick": str})
+        .set_index("symbol")
+        .price_tick.to_dict()
+    )
     snapshots = replay.frames["portfolio_snapshots"]
     last = snapshots.iloc[-1]
     nav = float(last.nav_units / 10**last.nav_scale)
@@ -227,9 +233,14 @@ def _paper_proposal(replay, scored, config, catalog_path, as_of):
         delta = targets.get(symbol, 0) - quantities.get(symbol, 0)
         if not delta:
             continue
-        amount = abs(delta) * prices[symbol]
-        slip = amount * config.costs.slippage
-        execution_amount = amount + slip if delta > 0 else amount - slip
+        reference = Decimal(str(prices[symbol]))
+        tick = Decimal(ticks[symbol])
+        direction = Decimal(1 if delta > 0 else -1)
+        execution_price = reference * (1 + direction * Decimal(str(config.costs.slippage)))
+        rounding = ROUND_CEILING if delta > 0 else ROUND_FLOOR
+        execution_price = (execution_price / tick).to_integral_value(rounding=rounding) * tick
+        slip = float(abs(execution_price - reference) * Decimal(str(abs(delta))))
+        execution_amount = float(execution_price * Decimal(str(abs(delta))))
         fee = max(execution_amount * config.costs.commission, config.costs.min_commission)
         fee += execution_amount * config.costs.stamp_tax if delta < 0 else 0
         fees += fee
@@ -241,6 +252,7 @@ def _paper_proposal(replay, scored, config, catalog_path, as_of):
                 "side": "buy" if delta > 0 else "sell",
                 "quantity": abs(delta),
                 "reference_close": prices[symbol],
+                "estimated_execution_price": float(execution_price),
                 "estimated_fee": fee,
                 "estimated_slippage": slip,
                 "execution": "next-session simulation; price and fill not guaranteed",
@@ -495,7 +507,24 @@ def _run_decision(
             "nav": nav,
             "currency": "CNY",
             "account_type": "virtual, no user brokerage holdings",
-            "allocation": asdict(config.costs),
+            "rebalance_frequency": settings["frequency"],
+            "allocation": {
+                key: value
+                for key, value in asdict(config.costs).items()
+                if key
+                in {
+                    "commission",
+                    "min_commission",
+                    "stamp_tax",
+                    "slippage",
+                    "lot_size",
+                    "initial_capital",
+                    "max_holdings",
+                    "participation_rate",
+                    "cash_buffer",
+                    "max_position_weight",
+                }
+            },
             "limits_of_daily_bars": "queue position and intraday tradability not verified",
         }
         reasons = []
