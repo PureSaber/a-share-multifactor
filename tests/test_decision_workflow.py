@@ -164,6 +164,9 @@ def test_provider_timeout_produces_a_blocked_card(setup_decision, monkeypatch):
 
 def test_corporate_action_window_remains_blocked(setup_decision, tmp_path):
     config, output = setup_decision
+    settings = yaml.safe_load(config.read_text())
+    settings["simulation_sessions"] = 2
+    config.write_text(yaml.safe_dump(settings))
     inputs = tmp_path / "inputs"
     dates, frames = _inputs(inputs)
     adjusted = frames["adjusted"]

@@ -192,9 +192,9 @@ fixture目录是版本化、显式、PIT的测试目录，其有效期是认证f
 ## M6依赖和契约治理
 
 本研究修复分支的`pyproject.toml`和`requirements.lock`固定到包含修复的不可变提交：
-QDK `8fed47b8f62694c36830dec270cfa21759133f2f`、QLab `c8d73813fe6a631a21811182804b3e3b857839d8`。
-QFactors 固定 `9aa58fd1263165c130c5ccb8b873bfc713c470cd`，
-QExec 固定 `476d2014b2ac3de88d03a9e2009edf561a60eafa`；这两项仅同步 QDK 引用及锁文件。
+QDK `5b68af566ee1d47f62caa5449719912df6e17983`、QLab `938927e5bcad641d46e3bd733e6323719d44aa50`。
+QFactors 固定 `0ee0bcd66a94d887dbcc6196dfb85b154550c196`，
+QExec 固定 `67164347c0a1fbb3e4f7a1b49ab9b172d02e86db`，统一公司行动、试验登记与账户导入能力。
 这是一组开发版本依赖，不使用浮动分支；旧发布标签不修改。默认安装和 CI 均包含此次修复，
 不再依靠本地相邻仓库覆盖来通过测试。正式发布仍需完成对应仓库的发布流程。
 

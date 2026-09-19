@@ -194,6 +194,13 @@ _V2_COLUMNS = {
 
 
 def _code_version(repo_root: Path) -> str:
+    if not (repo_root / ".git").exists():
+        distribution = importlib.metadata.distribution("a-share-multifactor")
+        direct = json.loads(distribution.read_text("direct_url.json") or "{}")
+        revision = direct.get("vcs_info", {}).get("commit_id", "")
+        if len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
+            raise RuntimeError("installed strategy requires immutable VCS provenance")
+        return revision
     status = subprocess.check_output(
         ["git", "status", "--porcelain=v1", "--untracked-files=all"],
         cwd=repo_root,
@@ -486,7 +493,7 @@ class _TargetWeightStrategy:
         self._risk_halted = state["risk_halted"]
 
     def on_event(self, context: StrategyContext, event: BarEvent) -> tuple[OrderIntent, ...]:
-        if self.ledger is None:
+        if self.ledger is None or not hasattr(event, "close_price"):
             return ()
         self._closing_prices[event.instrument_id] = event.close_price
         return self._after_close(context, event)
@@ -615,6 +622,8 @@ def _replay(
     *,
     catalog_path: Path = _CATALOG_PATH,
     risk_limits: dict | None = None,
+    corporate_actions: tuple = (),
+    target_schedule: dict | None = None,
 ) -> CertifiedReplay:
     if config.costs.retail_mode:
         raise ValueError(
@@ -646,7 +655,10 @@ def _replay(
         )
         for symbol, spec in instruments.items()
     }
-    events = _build_events(scored_panel, instruments)
+    bars = _build_events(scored_panel, instruments)
+    events = tuple(
+        sorted((*bars, *corporate_actions), key=lambda e: (e.available_at, e.instrument_id))
+    )
     ledger = _RecordingLedger(
         account_id=_ACCOUNT_ID,
         base_currency="CNY",
@@ -655,9 +667,11 @@ def _replay(
         money_scale=_MONEY_SCALE,
     )
     strategy = _TargetWeightStrategy(
-        _target_schedule(scored_panel, config, catalog_path=catalog_path),
+        _target_schedule(scored_panel, config, catalog_path=catalog_path)
+        if target_schedule is None
+        else target_schedule,
         ledger=ledger,
-        trigger_symbols={event.trading_day: event.instrument_id for event in events},
+        trigger_symbols={event.trading_day: event.instrument_id for event in bars},
         risk_limits=risk_limits,
         initial_capital=costs.initial_capital,
         blocked_dates=set(
@@ -688,7 +702,12 @@ def _replay(
     mark_by_time: dict[datetime, dict[str, FixedPoint]] = {}
     current_marks: dict[str, FixedPoint] = {}
     for event in events:
-        current_marks[event.instrument_id] = event.close_price
+        if isinstance(event, BarEvent):
+            current_marks[event.instrument_id] = event.close_price
+        elif getattr(event, "ratio", None) and event.instrument_id in current_marks:
+            current_marks[event.instrument_id] = _fixed(
+                _decimal(current_marks[event.instrument_id]) / _decimal(event.ratio), _MONEY_SCALE
+            )
         mark_by_time[event.available_at] = current_marks.copy()
     snapshot_rows: list[dict[str, Any]] = []
     position_rows: list[dict[str, Any]] = []

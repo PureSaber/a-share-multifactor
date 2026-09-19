@@ -19,11 +19,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+from quant_data_kit.exceptions import ValidationError
+from quant_lab.trials import TrialRegistry
 
 from a_share_multifactor.calendar import rebalance_dates
 from a_share_multifactor.config import _dict_to_config
+from a_share_multifactor.corporate_actions import action_events
 from a_share_multifactor.decision_contract import SCHEMA_VERSION, clean_json, write_decision
 from a_share_multifactor.ic_analysis import analyze_factors, analyze_ic_decay
+from a_share_multifactor.label_timing import mature_labels
 from a_share_multifactor.performance import return_statistics
 from a_share_multifactor.preprocess import prepare_factor_panel
 from a_share_multifactor.research_validation import run_research_validation
@@ -57,7 +61,12 @@ def fetch_inputs(root: Path, settings: dict, start: str, end: str, captured_at: 
         "requested_end": end,
         "files": {},
     }
-    for kind in ("calendar", "raw", "adjusted", "benchmark"):
+    kinds = ["calendar", "raw", "adjusted", "benchmark"]
+    if settings.get("corporate_actions", True):
+        kinds.append("actions")
+    if settings.get("trading_status", "off") != "off":
+        kinds.append("status")
+    for kind in kinds:
         path = root / f"{kind}.parquet"
         command = [
             sys.executable,
@@ -73,17 +82,26 @@ def fetch_inputs(root: Path, settings: dict, start: str, end: str, captured_at: 
             "--symbols",
             *[item["symbol"] for item in settings["watchlist"]],
         ]
-        result = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=settings.get("provider_timeout_seconds", 90),
-        )
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=settings.get("provider_timeout_seconds", 90),
+            )
+        except subprocess.TimeoutExpired:
+            if kind != "status" or settings.get("trading_status") != "advisory":
+                raise
+            result = subprocess.CompletedProcess(command, 124, "", "Current ST/halt feed timed out")
         if result.returncode:
             (root / f"{kind}-error.txt").write_text(result.stderr, encoding="utf-8")
+            if kind == "status" and settings.get("trading_status") == "advisory":
+                manifest.setdefault("warnings", []).append("Current ST/halt feed unavailable")
+                _save_json(root / "manifest.json", manifest)
+                continue
             raise RuntimeError(f"{kind} provider failed; see inputs/{kind}-error.txt")
         manifest["files"][kind] = {"file": path.name, "sha256": sha256(path)}
         _save_json(root / "manifest.json", manifest)
@@ -93,7 +111,13 @@ def fetch_inputs(root: Path, settings: dict, start: str, end: str, captured_at: 
 def load_inputs(root: Path) -> tuple[dict, dict[str, pd.DataFrame]]:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     frames = {}
-    for name in ("calendar", "raw", "adjusted", "benchmark"):
+    for name in (
+        "calendar",
+        "raw",
+        "adjusted",
+        "benchmark",
+        *[key for key in ("actions", "status") if key in manifest["files"]],
+    ):
         entry = manifest["files"][name]
         path = (root / entry["file"]).resolve()
         if path.parent != root.resolve() or sha256(path) != entry["sha256"]:
@@ -299,6 +323,8 @@ def _run_decision(
         "evidence": {},
         "reasons": [],
     }
+    registry = TrialRegistry(output_root / "experiments.db")
+    attempt = None
     try:
         settings = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         if not isinstance(settings, dict) or not isinstance(settings.get("app"), dict):
@@ -331,6 +357,29 @@ def _run_decision(
             "internal_dependencies": _dependency_revisions(),
         }
         card["evidence"].update(identity)
+        study = settings.get("study", {})
+        parameters = {"config_sha256": config_digest}
+        study_id = (
+            study.get("id")
+            or "decision-"
+            + hashlib.sha256(
+                (config_digest + json.dumps(identity, sort_keys=True)).encode()
+            ).hexdigest()[:20]
+        )
+        definition = {
+            "hypothesis": study.get(
+                "hypothesis", "Predeclared watchlist momentum/volatility paper trial"
+            ),
+            "parameters": [parameters],
+            "code_identity": identity,
+            "selection_rule": "retain all attempts; no retrospective winner selection",
+        }
+        if study.get("holdout_start"):
+            definition["holdout_start"] = study["holdout_start"]
+            definition["holdout_end"] = study["holdout_end"]
+        registry.register(study_id, definition, now=now.to_pydatetime())
+        attempt = registry.start(study_id, parameters, context={"run_id": run_id})
+        card["evidence"].update(study_id=study_id, attempt_id=attempt)
         state_path = output_root.resolve() / "paper_state.json"
         prior = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else None
         if prior and prior["config_sha256"] != config_digest:
@@ -354,6 +403,25 @@ def _run_decision(
         if asof == local.tz_localize(None).normalize() and local.hour < 16:
             raise ValueError("Today's daily bar is not admitted before 16:00 Asia/Shanghai")
         card["as_of"] = quality["as_of"]
+        status_rows = frames.get("status")
+        if status_rows is None:
+            quality["current_trading_status"] = "unverified"
+            if settings.get("trading_status") == "required":
+                raise ValueError("A current ST/halt snapshot is required")
+        else:
+            if set(status_rows.symbol) != set(symbols) or status_rows.symbol.duplicated().any():
+                raise ValueError("Incomplete/duplicate trading-status snapshot")
+            if (pd.to_datetime(status_rows.captured_at, utc=True) > now).any() or (
+                pd.to_datetime(status_rows.session) < asof
+            ).any():
+                raise ValueError("Future or stale trading-status snapshot")
+            quality["current_trading_status"] = status_rows[
+                ["symbol", "status", "source", "captured_at"]
+            ].to_dict("records")
+            if not status_rows.status.eq("no_reported_restriction").all():
+                raise ValueError(
+                    "Current ST/halt restriction or unknown tradability requires review"
+                )
         calendar = pd.DatetimeIndex(pd.to_datetime(frames["calendar"].date)).sort_values()
         next_session = calendar[calendar > asof].min()
         valid_until = next_session.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9, minutes=30)
@@ -380,8 +448,15 @@ def _run_decision(
         )
         # Validate factor evidence separately from portfolio performance. All labels
         # used to determine a fold's signs must have matured before that fold.
+        diagnostic_panel = panel
+        if study.get("holdout_start"):
+            holdout_start = pd.Timestamp(study["holdout_start"])
+            diagnostic_panel = panel[
+                (panel.date < holdout_start)
+                & mature_labels(panel, config.forward_return_col, holdout_start)
+            ]
         validation = run_research_validation(
-            panel, config.factors, config.forward_return_col, config
+            diagnostic_panel, config.factors, config.forward_return_col, config
         )
         validation.fold_metrics.to_csv(run_dir / "validation_folds.csv", index=False)
         validation.multiple_testing.to_csv(run_dir / "validation_fdr.csv", index=False)
@@ -392,6 +467,13 @@ def _run_decision(
             "historical_scope": "retrospective fixed watchlist, current adjusted-price snapshot",
             "selection_bias": "current example watchlist; not a historical index",
             "corporate_actions": "historical factor diagnostics are descriptive only",
+            "prospective_holdout": {
+                "start": study.get("holdout_start"),
+                "end": study.get("holdout_end"),
+                "status": "collecting_not_evaluated"
+                if study.get("holdout_start")
+                else "not_registered",
+            },
         }
         sessions = calendar[(calendar >= raw.date.min()) & (calendar <= asof)]
         # Default forward account starts at the first observed close. Optional
@@ -404,19 +486,19 @@ def _run_decision(
         simulation["decision_allowed"] = True
         if now >= valid_until or manifest["origin"] != "live_public_api":
             simulation.loc[simulation.date == asof, "decision_allowed"] = False
-        # Existing feeds lack a complete cash-dividend/split ledger. Refuse a
-        # simulated account across adjusted/raw price differences; never book
-        # dividends as losses or silently treat adjusted prices as execution prices.
-        check = simulation.merge(
-            adjusted[["symbol", "date", "close"]],
-            on=["symbol", "date"],
-            how="left",
-            suffixes=("", "_qfq"),
-        )
-        if check.close_qfq.isna().any() or ((check.close - check.close_qfq).abs() > 0.011).any():
-            raise ValueError(
-                "Corporate-action/adjustment differences in simulation window require a cashflow feed"
-            )
+        actions = action_events(frames.get("actions"), raw, adjusted, simulation_start, asof)
+        action_identity = {event.event_id: repr(event) for event in actions}
+        if prior and any(
+            action_identity.get(key) != value
+            for key, value in prior.get("applied_actions", {}).items()
+        ):
+            raise ValueError("Previously applied corporate actions changed or disappeared")
+        card["validation"]["corporate_actions"] = {
+            "events": len(actions),
+            "cash_policy": "gross dividend; personal dividend tax not modeled",
+            "supported": "previous-session entitlement, same-day cash/share delivery",
+            "historical_availability": "captured source snapshot; not verified historical vintages",
+        }
         schedule = rebalance_dates(pd.Series(calendar), settings["frequency"])
         # Full exchange calendar prevents a truncated mid-week run from inventing
         # a Friday rebalance. Warm-up and non-schedule rows cannot emit orders.
@@ -453,7 +535,12 @@ def _run_decision(
             (asof + pd.Timedelta(days=30)).date().isoformat(),
         )
         replay = _replay(
-            simulation, config, run_id, catalog_path=catalog, risk_limits=settings["risk"]
+            simulation,
+            config,
+            run_id,
+            catalog_path=catalog,
+            risk_limits=settings["risk"],
+            corporate_actions=actions,
         )
         results = replay_results(replay, config)
         returns = results.quantile_returns.iloc[:, 0]
@@ -480,8 +567,8 @@ def _run_decision(
                 ),
             }
         )
-        ic = analyze_factors(panel, config.factors, config.forward_return_col)
-        decay = analyze_ic_decay(panel, config.factors, [1, 5, 20])
+        ic = analyze_factors(diagnostic_panel, config.factors, config.forward_return_col)
+        decay = analyze_ic_decay(diagnostic_panel, config.factors, [1, 5, 20])
         snapshots = {name: f"sha256:{entry['sha256']}" for name, entry in manifest["files"].items()}
         _write_certified_v2(
             run_dir,
@@ -571,10 +658,12 @@ def _run_decision(
                     "scored_panel": str(run_dir / "scored_panel.parquet"),
                     "scored_panel_sha256": sha256(run_dir / "scored_panel.parquet"),
                     "observations": card["validation"]["forward_signal_observations"],
+                    "applied_actions": action_identity,
                 },
             )
             state_temp.replace(state_path)
     except (
+        ValidationError,
         ValueError,
         TypeError,
         RuntimeError,
@@ -587,6 +676,29 @@ def _run_decision(
         card["targets"] = []
         card["proposed_trades"] = []
         card["reasons"] = [f"{type(exc).__name__}: {exc}"]
+    if attempt is None:
+        # Even malformed configurations and version failures remain in the search history.
+        parameters = {"run_id": run_id}
+        registry.register(
+            run_id,
+            {
+                "hypothesis": "invalid/unstarted decision attempt",
+                "parameters": [parameters],
+                "code_identity": card["evidence"].get("code_version", "unverified"),
+                "selection_rule": "retain failed attempts",
+            },
+        )
+        attempt = registry.start(run_id, parameters)
+    registry.finish(
+        attempt,
+        "failed" if card["status"] == "blocked" else "completed",
+        {
+            "run_id": run_id,
+            "status": card["status"],
+            "reasons": card["reasons"],
+            "run_path": str(run_dir),
+        },
+    )
     write_decision(card, run_dir)
     # The pointer is updated even after failure: a stale previous BUY card must
     # never remain the apparent latest output when today's refresh fails.
