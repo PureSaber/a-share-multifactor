@@ -23,6 +23,7 @@ dependencies = [
     "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@0ee0bcd66a94d887dbcc6196dfb85b154550c196",
     "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@67164347c0a1fbb3e4f7a1b49ab9b172d02e86db",
     "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@938927e5bcad641d46e3bd733e6323719d44aa50",
+    "quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@6742ba15026ada66f188127574a3b4d0a7387a81",
 ]
 
 [project.optional-dependencies]

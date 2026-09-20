@@ -75,6 +75,52 @@ def _run(config, output, inputs, dates, last=79):
     )
 
 
+def test_trading_status_must_be_complete_same_session_and_fresh():
+    now = pd.Timestamp("2026-09-18T17:00:00+08:00")
+    rows = pd.DataFrame(
+        [
+            {
+                "symbol": "000001",
+                "session": "2026-09-18",
+                "status": "no_reported_restriction",
+                "captured_at": "2026-09-18T16:30:00+08:00",
+                "source": "fixture",
+            }
+        ]
+    )
+    result = flow.validate_trading_status(
+        rows,
+        symbols=["000001"],
+        as_of=pd.Timestamp("2026-09-18"),
+        now=now,
+        required=True,
+        max_age_hours=8,
+    )
+    assert result[0]["symbol"] == "000001"
+
+    stale = rows.assign(captured_at="2026-09-17T16:30:00+08:00")
+    with pytest.raises(ValueError, match="Stale"):
+        flow.validate_trading_status(
+            stale,
+            symbols=["000001"],
+            as_of=pd.Timestamp("2026-09-18"),
+            now=now,
+            required=True,
+            max_age_hours=8,
+        )
+
+    restricted = rows.assign(status="suspended")
+    with pytest.raises(ValueError, match="restriction"):
+        flow.validate_trading_status(
+            restricted,
+            symbols=["000001"],
+            as_of=pd.Timestamp("2026-09-18"),
+            now=now,
+            required=True,
+            max_age_hours=8,
+        )
+
+
 def test_forward_account_freezes_signals_and_advances_the_same_ledger(setup_decision, tmp_path):
     config, output = setup_decision
     first = tmp_path / "first"
