@@ -581,6 +581,8 @@ def _run_decision(
             catalog_path=catalog,
             risk_limits=settings["risk"],
             corporate_actions=actions,
+            account_id=str(settings.get("account_id", "a-share-multifactor-account")),
+            strategy_id=str(settings.get("strategy_id", "a-share-multifactor-qexec")),
         )
         results = replay_results(replay, config)
         returns = results.quantile_returns.iloc[:, 0]
@@ -647,6 +649,8 @@ def _run_decision(
             "nav": nav,
             "currency": "CNY",
             "account_type": "virtual, no user brokerage holdings",
+            "account_id": replay.account_id,
+            "strategy_id": replay.strategy_id,
             "rebalance_frequency": settings["frequency"],
             "allocation": {
                 key: value

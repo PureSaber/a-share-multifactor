@@ -139,6 +139,22 @@ def test_blocked_signal_days_and_risk_limits_stop_orders():
     assert not (times.dt.normalize() >= dates[2]).any()
 
 
+def test_replay_uses_profile_specific_account_and_strategy_ids():
+    from test_certified_execution import _certified_panel
+
+    replay = _replay(
+        _certified_panel(),
+        AppConfig(rebalance_freq="daily"),
+        "isolated-account",
+        account_id="daily-research-v2-account",
+        strategy_id="daily-research-v2-strategy",
+    )
+    assert replay.account_id == "daily-research-v2-account"
+    assert replay.strategy_id == "daily-research-v2-strategy"
+    assert set(replay.frames["portfolio_snapshots"].account_id) == {"daily-research-v2-account"}
+    assert set(replay.frames["returns"].strategy_id) == {"daily-research-v2-strategy"}
+
+
 def test_strategy_without_account_and_insolvent_account_cannot_emit_orders():
     from types import SimpleNamespace
 

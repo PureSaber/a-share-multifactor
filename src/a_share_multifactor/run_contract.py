@@ -668,6 +668,8 @@ class CertifiedReplay:
     mappings: tuple[SymbolMapping, ...]
     ledger: _RecordingLedger
     frames: dict[str, pd.DataFrame]
+    account_id: str
+    strategy_id: str
     risk_checks: tuple[dict[str, Any], ...]
 
 
@@ -684,7 +686,11 @@ def _replay(
     risk_limits: dict | None = None,
     corporate_actions: tuple = (),
     target_schedule: dict | None = None,
+    account_id: str = _ACCOUNT_ID,
+    strategy_id: str = _STRATEGY_ID,
 ) -> CertifiedReplay:
+    if not account_id.strip() or not strategy_id.strip():
+        raise ValueError("account_id and strategy_id must be non-empty")
     if config.costs.retail_mode:
         raise ValueError(
             "QExec replay does not support retail early-exit/min-holding rules; "
@@ -720,7 +726,7 @@ def _replay(
         sorted((*bars, *corporate_actions), key=lambda e: (e.available_at, e.instrument_id))
     )
     ledger = _RecordingLedger(
-        account_id=_ACCOUNT_ID,
+        account_id=account_id,
         base_currency="CNY",
         instruments=instruments,
         initial_cash={"CNY": _fixed(config.costs.initial_capital, 2)},
@@ -744,8 +750,8 @@ def _replay(
     )
     engine = DeterministicRunEngine(
         run_id=run_id,
-        account_id=_ACCOUNT_ID,
-        strategy_id=_STRATEGY_ID,
+        account_id=account_id,
+        strategy_id=strategy_id,
         strategy=strategy,
         broker=DeterministicBroker(),
         risk_gate=ConfiguredAShareRiskGate(instruments=instruments, ledger=ledger),
@@ -801,7 +807,7 @@ def _replay(
                 {
                     "event_time": event_time,
                     "account_id": snapshot.account_id,
-                    "strategy_id": _STRATEGY_ID,
+                    "strategy_id": strategy_id,
                     "instrument_id": instrument_id,
                     "quantity_units": quantity.units,
                     "quantity_scale": quantity.scale,
@@ -846,7 +852,7 @@ def _replay(
         return_rows.append(
             {
                 "event_time": event_time,
-                "strategy_id": _STRATEGY_ID,
+                "strategy_id": strategy_id,
                 "gross_return": gross_return,
                 "net_return": net_return,
                 "nav_units": snapshot.nav.units,
@@ -937,7 +943,7 @@ def _replay(
             "event_time": fee.event_time,
             "cost_id": fee.fee_id,
             "account_id": fee.account_id,
-            "strategy_id": _STRATEGY_ID,
+            "strategy_id": strategy_id,
             "instrument_id": fills_by_id[fee.fill_id].instrument_id,
             "fill_id": fee.fill_id,
             "cost_type": fee.fee_type,
@@ -959,7 +965,7 @@ def _replay(
                     "reference_id": transaction.reference_id,
                     "posting_index": posting_index,
                     "ledger_account": posting.ledger_account,
-                    "account_id": _ACCOUNT_ID,
+                    "account_id": account_id,
                     "currency": posting.currency,
                     "amount_units": posting.amount.units,
                     "amount_scale": posting.amount.scale,
@@ -985,8 +991,8 @@ def _replay(
                 exposure_rows.append(
                     {
                         "event_time": event_time,
-                        "account_id": _ACCOUNT_ID,
-                        "strategy_id": _STRATEGY_ID,
+                        "account_id": account_id,
+                        "strategy_id": strategy_id,
                         "exposure_type": "factor",
                         "name": factor,
                         "value": float(value),
@@ -1031,7 +1037,15 @@ def _replay(
             daily[column] = compounded.to_numpy()
         frames["returns"] = daily.reset_index(drop=True)
     return CertifiedReplay(
-        result, events, instruments, mappings, ledger, frames, strategy.risk_checks
+        result,
+        events,
+        instruments,
+        mappings,
+        ledger,
+        frames,
+        account_id,
+        strategy_id,
+        strategy.risk_checks,
     )
 
 
@@ -1093,7 +1107,7 @@ def _write_certified_v2(
         run_dir,
         project="a-share-multifactor",
         run_id=run_dir.name,
-        strategy_ids=[_STRATEGY_ID],
+        strategy_ids=[replay.strategy_id],
         profile="backtest-ledger",
         frames=replay.frames,
         metrics={
