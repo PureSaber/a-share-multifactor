@@ -162,6 +162,7 @@ def test_replay_uses_profile_specific_account_and_strategy_ids():
 
 
 def test_strategy_without_account_and_insolvent_account_cannot_emit_orders():
+    from decimal import Decimal
     from types import SimpleNamespace
 
     from quant_data_kit import FixedPoint
@@ -176,6 +177,8 @@ def test_strategy_without_account_and_insolvent_account_cannot_emit_orders():
         trading_day=day, instrument_id="A", available_at=None, close_price=FixedPoint(10, 0)
     )
     assert strategy.on_event(None, event) == ()
+    assert not strategy._portfolio_check(target={"B": 1}, current={}, nav=Decimal(100), event=event)
+    assert strategy.risk_checks[-1]["alerts"][0]["rule_id"] == "portfolio.missing_mark"
     state = strategy.capture_state()
     strategy.reset()
     strategy.restore_state(state)
