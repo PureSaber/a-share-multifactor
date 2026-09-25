@@ -142,8 +142,9 @@ def test_blocked_signal_days_and_risk_limits_stop_orders():
 def test_replay_uses_profile_specific_account_and_strategy_ids():
     from test_certified_execution import _certified_panel
 
+    panel = _certified_panel()
     replay = _replay(
-        _certified_panel(),
+        panel,
         AppConfig(rebalance_freq="daily"),
         "isolated-account",
         account_id="daily-research-v2-account",
@@ -153,6 +154,11 @@ def test_replay_uses_profile_specific_account_and_strategy_ids():
     assert replay.strategy_id == "daily-research-v2-strategy"
     assert set(replay.frames["portfolio_snapshots"].account_id) == {"daily-research-v2-account"}
     assert set(replay.frames["returns"].strategy_id) == {"daily-research-v2-strategy"}
+
+    with pytest.raises(ValueError, match="non-empty"):
+        _replay(panel, AppConfig(), "blank-account", account_id=" ")
+    with pytest.raises(ValueError, match="non-empty"):
+        _replay(panel, AppConfig(), "blank-strategy", strategy_id=" ")
 
 
 def test_strategy_without_account_and_insolvent_account_cannot_emit_orders():
