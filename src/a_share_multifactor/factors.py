@@ -9,9 +9,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 
-import numpy as np
 import pandas as pd
 from quant_factors.core import compute_factors as qf_compute
+from quant_factors.core import list_factors
 
 try:
     QUANT_FACTORS_VERSION = version("quant-factors")
@@ -21,12 +21,7 @@ except PackageNotFoundError:  # pragma: no cover
 FactorFn = Callable[[pd.DataFrame], pd.Series]
 
 # Contract: these names must match quant_factors.core factor ids.
-SHARED_QF_FACTORS = (
-    "momentum_20d",
-    "reversal_5d",
-    "volatility_20d",
-    "turnover_20d",
-)
+SHARED_QF_FACTORS = tuple(list_factors())
 
 PASSTHROUGH_FACTORS = {
     "market_cap",
@@ -68,6 +63,9 @@ def compute_factors(price_df: pd.DataFrame, factor_names: list[str] | None = Non
     names = factor_names or list(SHARED_QF_FACTORS) + list(FACTOR_REGISTRY) + list(
         PASSTHROUGH_FACTORS
     )
+    unknown = set(names) - set(SHARED_QF_FACTORS) - set(FACTOR_REGISTRY) - PASSTHROUGH_FACTORS
+    if unknown:
+        raise ValueError(f"Unknown factors: {sorted(unknown)}")
     qf_names = [n for n in names if n in SHARED_QF_FACTORS]
     local_names = [n for n in names if n not in qf_names]
 
@@ -78,8 +76,8 @@ def compute_factors(price_df: pd.DataFrame, factor_names: list[str] | None = Non
     for name in local_names:
         if name in FACTOR_REGISTRY and name not in base.columns:
             base[name] = FACTOR_REGISTRY[name](base)
-        elif name not in PASSTHROUGH_FACTORS and name not in base.columns:
-            base[name] = np.nan
+        elif name not in base.columns:
+            raise ValueError(f"Factor {name} requires its source column")
 
     return base
 

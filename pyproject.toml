@@ -19,11 +19,11 @@ dependencies = [
     "mini-racer==0.14.1",
     "pyarrow>=14.0",
     "matplotlib>=3.8",
-    "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@5b68af566ee1d47f62caa5449719912df6e17983",
-    "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@0ee0bcd66a94d887dbcc6196dfb85b154550c196",
-    "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@67164347c0a1fbb3e4f7a1b49ab9b172d02e86db",
-    "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@938927e5bcad641d46e3bd733e6323719d44aa50",
-    "quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@6742ba15026ada66f188127574a3b4d0a7387a81",
+    "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@fbbad913c9e592fdcbf8b473c4230e2da8594cef",
+    "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@ba021bbe11696f0bd5cda0ee047515793f11855d",
+    "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@e9bf4ca2db6e7fb632cf3b091227b4e61ff84bda",
+    "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@bace19c01cf3ecd77fbbb4a5bc75f2ce3498902f",
+    "quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@ede86a080eab25054756bc95ef6d31353a99122b",
 ]
 
 [project.optional-dependencies]

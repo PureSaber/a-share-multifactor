@@ -9,7 +9,7 @@ from quant_factors.core import compute_factors as qf_compute
 from a_share_multifactor.factors import SHARED_QF_FACTORS, compute_factors, quant_factors_version
 
 
-def _panel(n_days: int = 60, n_symbols: int = 3) -> pd.DataFrame:
+def _panel(n_days: int = 90, n_symbols: int = 3) -> pd.DataFrame:
     rows = []
     rng = np.random.default_rng(42)
     for i, sym in enumerate([f"S{i:03d}" for i in range(n_symbols)]):
@@ -24,6 +24,8 @@ def _panel(n_days: int = 60, n_symbols: int = 3) -> pd.DataFrame:
                     "low": close[d] * 0.99,
                     "close": close[d],
                     "volume": 1_000_000 + 1000 * d,
+                    "pe_ratio": 10.0 + i,
+                    "pb_ratio": 1.5 + i / 10,
                 }
             )
     return pd.DataFrame(rows)
