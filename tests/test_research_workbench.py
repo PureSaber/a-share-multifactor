@@ -92,6 +92,79 @@ def test_candidate_ledgers_cost_stress_and_data_cache(recipe, tmp_path):
     json.dumps(base, allow_nan=False)
 
 
+def test_factor_risk_reaches_optimizer_and_blocks_tracking_error(recipe, tmp_path):
+    recipe["allocation"] = {"mode": "cost_aware", "max_turnover": 2.0}
+    recipe["risk_model"] = {
+        "model_kind": "statistical_proxy",
+        "lookback": 30,
+        "factor_bounds": {"market": [0, 0.6]},
+        "benchmark_weights": {"000001": 0.25, "000333": 0.25, "600036": 0.25, "601318": 0.25},
+        "active_factor_bounds": {"market": [-0.6, 0.0]},
+        "max_tracking_error": 1.0,
+    }
+    result = execute(EquityResearchExecutor(), recipe, candidates(recipe)[0], tmp_path / "risk")
+    assert result["metrics"]["fills"] > 0
+    models = json.loads((tmp_path / "risk/risk_models.json").read_text())
+    assert all(row["model"]["is_proxy"] for row in models.values())
+    evidence = json.loads((tmp_path / "risk/execution_diagnostics.json").read_text())
+    assert evidence["allocation_decisions"]
+    assert any(row.get("factor_risk", {}).get("tracking_risk") for row in evidence["risk_checks"])
+    recipe["risk_model"]["max_tracking_error"] = 0.0
+    blocked = execute(
+        EquityResearchExecutor(), recipe, candidates(recipe)[0], tmp_path / "te-block"
+    )
+    assert blocked["metrics"]["fills"] == 0
+    checks = json.loads((tmp_path / "te-block/execution_diagnostics.json").read_text())[
+        "risk_checks"
+    ]
+    assert any(
+        a["rule_id"] == "portfolio.max_tracking_error" for row in checks for a in row["alerts"]
+    )
+
+
+def test_pit_industry_caps_change_allocation_and_neutralization_changes_scores(recipe, tmp_path):
+    from a_share_multifactor.research_risk import neutralize_signals
+
+    freeze_history(
+        recipe,
+        tmp_path,
+        domain="classification",
+        field="industry",
+        values={"000001": "bank", "000333": "consumer", "600036": "bank", "601318": "insurance"},
+    )
+    recipe["required_history"] = {"industry": "classification"}
+    recipe["allocation"] = {"mode": "cost_aware", "max_turnover": 2.0}
+    recipe["strategy"].update(top_n=4, max_weight=0.4)
+    recipe["risk"] = {
+        "max_industry_weight": 0.3,
+        "industry_field": "industry",
+        "exposure_breach_action": "liquidate",
+    }
+    result = execute(EquityResearchExecutor(), recipe, candidates(recipe)[0], tmp_path / "sector")
+    assert result["metrics"]["fills"] > 0
+    checks = json.loads((tmp_path / "sector/execution_diagnostics.json").read_text())["risk_checks"]
+    assert checks and not any(row["has_critical"] for row in checks if row.get("stage") == "target")
+    assert any(row["has_critical"] for row in checks if row.get("stage") == "realized")
+    halted = next(row for row in checks if row.get("exposure_breach_action") == "liquidate")
+    from quant_lab import load_and_validate_standard_run
+
+    validated = load_and_validate_standard_run(tmp_path / "sector")
+    assert validated.profile == "backtest-ledger"
+    # The first actual drift locks the account; no later buy is emitted.
+    orders = pd.read_parquet(tmp_path / "sector/standard/v2/orders.parquet")
+    later = orders[
+        pd.to_datetime(orders.event_time, utc=True) >= pd.Timestamp(halted["checked_at"])
+    ]
+    assert not later.empty and later.side.eq("sell").all() and later.reduce_only.all()
+    panel = pd.DataFrame(
+        {"date": ["2025-01-02"] * 4, "industry": ["a", "a", "b", "b"], "momentum": [1, 3, 10, 14]}
+    )
+    actual = neutralize_signals(panel, ["momentum"], ["industry"])
+    assert actual.momentum.tolist() == [-1, 1, -2, 2]
+    with pytest.raises(ValueError, match="PIT"):
+        neutralize_signals(panel.drop(columns="industry"), ["momentum"], ["industry"])
+
+
 def test_delayed_signal_and_unknown_factor(recipe, tmp_path):
     executor = EquityResearchExecutor()
     candidate = next(c for c in candidates(recipe) if c["name"] == "delay_1")

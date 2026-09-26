@@ -609,6 +609,13 @@ class EquityResearchExecutor:
                 expressions,
             )
         features = self._features[features_key].copy()
+        from a_share_multifactor.research_risk import (
+            allocation_risk_inputs,
+            build_risk_schedule,
+            neutralize_signals,
+        )
+
+        features = neutralize_signals(features, names, recipe.get("neutralization", []))
         valid_features = features[names].apply(pd.to_numeric, errors="coerce")
         finite = np.isfinite(valid_features).all(axis=1)
         ranks = pd.concat(
@@ -690,6 +697,26 @@ class EquityResearchExecutor:
                 ),
             )
         allocation_schedule = None
+        risk_schedule = build_risk_schedule(
+            research,
+            recipe,
+            prepared["evaluation_sessions"],
+            raw_prices=raw,
+            actions=frames.get("actions"),
+        )
+        if risk_schedule:
+            (output / "risk_models.json").write_text(
+                canonical(
+                    {
+                        day.isoformat(): {
+                            "classifications": item["classifications"],
+                            "model": item["model"].to_dict() if item["model"] else None,
+                        }
+                        for day, item in risk_schedule.items()
+                    }
+                ),
+                encoding="utf-8",
+            )
         if allocation is None and strategy["family"] == "buy_hold":
             first = scored[scored.date == scored.date.min()].assign(composite_score=1.0)
             schedule = _target_schedule(first, cfg, catalog_path=catalog)
@@ -745,6 +772,14 @@ class EquityResearchExecutor:
                         dtype=float,
                     ),
                 }
+                if risk_schedule:
+                    allocation_schedule[day.date()].update(
+                        allocation_risk_inputs(
+                            risk_schedule[day.date()],
+                            selected.symbol.tolist(),
+                            recipe.get("risk", {}),
+                        )
+                    )
         actions = action_events(
             frames.get("actions"), raw, adjusted, pd.Timestamp(start), pd.Timestamp(end)
         )
@@ -759,6 +794,7 @@ class EquityResearchExecutor:
             status_events=prepared["status_events"],
             execution_policy=execution,
             risk_limits=recipe.get("risk", {}),
+            risk_schedule=risk_schedule,
             strategy_id="research-" + candidate["candidate_id"],
         )
         result = replay_results(replay, cfg)
@@ -776,6 +812,8 @@ class EquityResearchExecutor:
             start=start,
             end=end,
             expressions=expressions,
+            neutralize_by=tuple(recipe.get("neutralization", [])),
+            signal_delay=delay,
         )
         (output / "factors.json").write_text(canonical(factors), encoding="utf-8")
         metrics = {
@@ -799,6 +837,8 @@ class EquityResearchExecutor:
         execution_diagnostics = {
             "schema_version": "asm.research-execution-diagnostics/v1",
             "allocation_decisions": list(replay.allocation_decisions),
+            "risk_checks": list(replay.risk_checks),
+            "runtime_risk_events": list(replay.runtime_risk_events),
             "retry_diagnostics": list(replay.retry_diagnostics),
             "unfilled_orders": [
                 {
@@ -846,6 +886,27 @@ class EquityResearchExecutor:
             )
         return {
             "metrics": metrics,
+            "risk_summary": {
+                "model_kind": recipe.get("risk_model", {}).get("model_kind"),
+                "model_snapshots": sum(
+                    item["model"] is not None for item in risk_schedule.values()
+                ),
+                "target_rejections": sum(
+                    row.get("stage") == "target" and row["has_critical"]
+                    for row in replay.risk_checks
+                ),
+                "realized_breaches": sum(
+                    row.get("stage") == "realized" and row["has_critical"]
+                    for row in replay.risk_checks
+                ),
+                "drawdown_halted_sessions": sum(
+                    "drawdown_action" in row for row in replay.risk_checks
+                ),
+                "exposure_halted_sessions": sum(
+                    "exposure_breach_action" in row for row in replay.risk_checks
+                ),
+                "runtime_risk_events": len(replay.runtime_risk_events),
+            },
             "segments": segments,
             "factor_evidence": factors,
             "comparison": {
@@ -858,6 +919,8 @@ class EquityResearchExecutor:
                 "invested_limit": invested,
                 "allocation": allocation,
                 "execution": execution,
+                "risk_model": recipe.get("risk_model"),
+                "neutralization": recipe.get("neutralization", []),
             },
             "scope": "synthetic-software-demonstration"
             if raw.source.astype(str).str.contains("synthetic").any()
