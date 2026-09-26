@@ -548,32 +548,35 @@ class _TargetWeightStrategy:
         return tuple(self._retry_diagnostics)
 
     def _allocation_target(self, day: date, snapshot, nav: Decimal) -> dict[str, int]:
+        from quant_portfolio import research_allocation_weights, validate_research_allocation
+
         plan = self.allocation_schedule[day]
         scores = plan["scores"]
+        settings = validate_research_allocation(plan["allocation"])
+        held = {
+            str(symbol): _decimal(quantity)
+            for symbol, quantity in snapshot.positions.items()
+            if _decimal(quantity) != 0
+        }
+        missing_current_marks = sorted(set(held) - set(self._closing_prices))
+        if missing_current_marks:
+            raise ValueError(
+                "Current-NAV allocation is missing a close for held positions: "
+                f"{missing_current_marks}"
+            )
+        current_weights = pd.Series(
+            {
+                symbol: float(quantity * _decimal(self._closing_prices[symbol]) / nav)
+                for symbol, quantity in held.items()
+            },
+            dtype=float,
+        )
         if scores.empty or plan["invested_limit"] <= 0:
+            if float(current_weights.abs().sum()) > float(settings["max_turnover"]) + 1e-10:
+                raise ValueError("allocation.max_turnover is infeasible for liquidation")
             weights = pd.Series(dtype=float)
             target = {}
         else:
-            held = {
-                str(symbol): _decimal(quantity)
-                for symbol, quantity in snapshot.positions.items()
-                if _decimal(quantity) != 0
-            }
-            missing_current_marks = sorted(set(held) - set(self._closing_prices))
-            if missing_current_marks:
-                raise ValueError(
-                    "Current-NAV allocation is missing a close for held positions: "
-                    f"{missing_current_marks}"
-                )
-            current_weights = pd.Series(
-                {
-                    symbol: float(quantity * _decimal(self._closing_prices[symbol]) / nav)
-                    for symbol, quantity in held.items()
-                },
-                dtype=float,
-            )
-            from quant_portfolio import research_allocation_weights
-
             weights = research_allocation_weights(
                 scores,
                 plan["trailing_returns"],
@@ -581,7 +584,7 @@ class _TargetWeightStrategy:
                 plan["linear_costs"],
                 invested_limit=plan["invested_limit"],
                 max_weight=plan["max_weight"],
-                config=plan["allocation"],
+                config=settings,
             )
             target = {}
             catalog = self.catalog.set_index("symbol")

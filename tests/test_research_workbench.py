@@ -269,6 +269,26 @@ def test_registered_fundamental_history_is_used(recipe, tmp_path):
     assert result["factor_evidence"]["coverage"][0]["coverage"] == 1
 
 
+def test_mixed_expression_requires_only_its_financial_publication_history(recipe, tmp_path):
+    recipe["factors"] = {"value_momentum": 1}
+    recipe["factor_expressions"] = {"value_momentum": "pe_inv + momentum_20d"}
+    recipe["required_history"] = {"pe_ratio": "fundamentals"}
+    freeze_history(
+        recipe,
+        tmp_path,
+        domain="fundamentals",
+        field="pe_ratio",
+        values={"000001": 10, "000333": 20, "600036": 30, "601318": 40},
+    )
+    assert preflight_recipe(recipe)["passed"]
+    result = execute(EquityResearchExecutor(), recipe, candidates(recipe)[0], tmp_path / "mixed")
+    assert result["metrics"]["fills"] > 0
+    recipe["required_history"] = {}
+    report = preflight_recipe(recipe)
+    assert not report["passed"]
+    assert "pe_ratio" in report["issues"][0]["detail"]
+
+
 def test_preflight_and_current_nav_allocation_retry_suspended_orders(recipe, tmp_path):
     calendar = pd.read_parquet(Path(recipe["inputs"]["bundle"]) / "calendar.parquet")
     dates = pd.DatetimeIndex(pd.to_datetime(calendar.date))
@@ -453,6 +473,12 @@ def test_current_nav_allocation_counts_holdings_dropped_from_scores() -> None:
         **strategy.allocation_schedule[day],
         "scores": pd.Series(dtype=float),
     }
+    with pytest.raises(ValueError, match="missing a close for held positions"):
+        strategy._allocation_target(day, snapshot, Decimal(1000))
+    strategy._closing_prices["DROPPED"] = FixedPoint(10, 0)
+    with pytest.raises(ValueError, match="max_turnover is infeasible"):
+        strategy._allocation_target(day, snapshot, Decimal(1000))
+    strategy.allocation_schedule[day]["allocation"]["max_turnover"] = 0.7
     assert strategy._allocation_target(day, snapshot, Decimal(1000)) == {}
 
 

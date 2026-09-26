@@ -20,7 +20,7 @@ dependencies = [
     "pyarrow>=14.0",
     "matplotlib>=3.8",
     "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@104f1ef8a3b1278c0ea5420fadaa9d1d863ce726",
-    "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@e5da58606081d9f733cdb0fec96ca408003b4e41",
+    "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@313243588a0ea090a399244eccbc8e1833119b3a",
     "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@dc03e0693031169a80e0eefd06fff424d0a1bc25",
     "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@8f47d2ba69ee532d7559957e4b2fb36c2b13a3d8",
     "quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@a80ffbc4d5896d3c9fe9e29c32f3c1982a8c713b",

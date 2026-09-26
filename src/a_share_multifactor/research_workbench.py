@@ -457,10 +457,7 @@ def _prepare_research_inputs(
     )
     requirements = expression_requirements(names, expressions)
     fundamental_columns = {
-        column
-        for requirement in requirements.values()
-        if requirement.get("pit_required")
-        for column in requirement["columns"]
+        column for requirement in requirements.values() for column in requirement["pit_columns"]
     }
     missing_mappings = sorted(
         column for column in fundamental_columns if required_history.get(column) != "fundamentals"
