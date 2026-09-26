@@ -473,6 +473,8 @@ def _prepare_research_inputs(
         requirements["trend_filter"] = {
             "columns": ["close"],
             "warmup_bars": strategy["trend_window"],
+            "pit_required": False,
+            "dependencies": [],
         }
     if any(item.get("pit_required") for item in requirements.values()) and history is None:
         raise ValueError("Fundamental factors require an imported publication-time history")
