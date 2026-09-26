@@ -554,15 +554,21 @@ class _TargetWeightStrategy:
             weights = pd.Series(dtype=float)
             target = {}
         else:
+            held = {
+                str(symbol): _decimal(quantity)
+                for symbol, quantity in snapshot.positions.items()
+                if _decimal(quantity) != 0
+            }
+            missing_current_marks = sorted(set(held) - set(self._closing_prices))
+            if missing_current_marks:
+                raise ValueError(
+                    "Current-NAV allocation is missing a close for held positions: "
+                    f"{missing_current_marks}"
+                )
             current_weights = pd.Series(
                 {
-                    symbol: float(
-                        _decimal(snapshot.positions.get(symbol, FixedPoint(0, 0)))
-                        * _decimal(self._closing_prices[symbol])
-                        / nav
-                    )
-                    for symbol in scores.index
-                    if symbol in self._closing_prices
+                    symbol: float(quantity * _decimal(self._closing_prices[symbol]) / nav)
+                    for symbol, quantity in held.items()
                 },
                 dtype=float,
             )

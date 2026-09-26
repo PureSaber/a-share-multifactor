@@ -1,8 +1,11 @@
 import json
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from quant_data_kit import FixedPoint, StatusEvent
 from quant_data_kit.research_coverage import import_history
 from quant_execution import ReplayError
 from quant_lab import load_and_validate_standard_run
@@ -415,6 +418,91 @@ def test_optimizer_modes_rebalance_against_current_ledger_nav(recipe, tmp_path, 
     assert len(decisions) > 1
     assert any(decision["nav"] != recipe["costs"]["initial_capital"] for decision in decisions[1:])
     assert all(sum(decision["weights"].values()) <= 0.5 + 1e-9 for decision in decisions)
+
+
+def test_current_nav_allocation_counts_holdings_dropped_from_scores() -> None:
+    day = pd.Timestamp("2026-01-05").date()
+    strategy = run_contract._TargetWeightStrategy(
+        schedule={},
+        initial_capital=1000,
+        allocation_schedule={
+            day: {
+                "scores": pd.Series({"A": 0.2, "B": 0.1}),
+                "trailing_returns": None,
+                "linear_costs": None,
+                "invested_limit": 0.6,
+                "max_weight": 0.4,
+                "allocation": {"mode": "equal", "max_turnover": 0.3},
+            }
+        },
+    )
+    strategy._closing_prices = {
+        "A": FixedPoint(10, 0),
+        "B": FixedPoint(10, 0),
+        "DROPPED": FixedPoint(10, 0),
+    }
+    snapshot = SimpleNamespace(positions={"A": FixedPoint(30, 0), "DROPPED": FixedPoint(40, 0)})
+    with pytest.raises(ValueError, match="max_turnover is infeasible"):
+        strategy._allocation_target(day, snapshot, Decimal(1000))
+
+    strategy._closing_prices.pop("DROPPED")
+    with pytest.raises(ValueError, match="missing a close for held positions"):
+        strategy._allocation_target(day, snapshot, Decimal(1000))
+
+    strategy.allocation_schedule[day] = {
+        **strategy.allocation_schedule[day],
+        "scores": pd.Series(dtype=float),
+    }
+    assert strategy._allocation_target(day, snapshot, Decimal(1000)) == {}
+
+
+def test_current_nav_allocation_fails_missing_selected_close_and_keeps_small_target_zero() -> None:
+    day = pd.Timestamp("2026-01-05").date()
+    strategy = run_contract._TargetWeightStrategy(
+        schedule={},
+        initial_capital=10,
+        allocation_schedule={
+            day: {
+                "scores": pd.Series({"A": 0.2, "B": 0.1}),
+                "trailing_returns": None,
+                "linear_costs": None,
+                "invested_limit": 0.6,
+                "max_weight": 0.4,
+                "allocation": {"mode": "equal", "max_turnover": 1.0},
+            }
+        },
+        catalog=pd.DataFrame({"symbol": ["A", "B"], "lot_size": [100, 100]}),
+        costs=SimpleNamespace(min_commission=0, slippage=0, commission=0),
+    )
+    strategy._closing_prices = {"A": FixedPoint(10, 0)}
+    snapshot = SimpleNamespace(positions={})
+    with pytest.raises(ValueError, match="missing a close for B"):
+        strategy._allocation_target(day, snapshot, Decimal(10))
+
+    strategy._closing_prices["B"] = FixedPoint(10, 0)
+    assert strategy._allocation_target(day, snapshot, Decimal(10)) == {}
+
+
+def test_closed_status_without_a_position_is_a_valid_no_trade_event() -> None:
+    at = pd.Timestamp("2026-01-05 01:30:00", tz="UTC").to_pydatetime()
+    strategy = run_contract._TargetWeightStrategy(
+        schedule={},
+        ledger=SimpleNamespace(snapshot=lambda _: SimpleNamespace(positions={})),
+    )
+    event = StatusEvent(
+        event_id="status:unheld-closed",
+        instrument_id="UNHELD",
+        event_time=at,
+        received_at=at,
+        available_at=at,
+        source="test",
+        trading_day=at.date(),
+        session_id="test-session",
+        sequence=0,
+        status="closed",
+        reason="not-yet-listed",
+    )
+    assert strategy.on_event(None, event) == ()
 
 
 def test_held_delisting_without_disposition_fails_instead_of_fake_sale(recipe, tmp_path):

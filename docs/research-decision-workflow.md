@@ -86,8 +86,9 @@ python -m a_share_multifactor.decision_workflow --inputs <run>/inputs --as-of 20
 
 显式`allocation`支持`equal`、`inverse_vol`和`cost_aware`。后者调用`quant-portfolio`既有
 均值方差优化器。每次调仓在信号收盘后读取同一QExec账本的当前NAV、持仓和收盘价，再按整手、
-现金缓冲、单票上限、佣金、最低佣金和滑点生成目标数量；未配置`allocation`的旧配方继续使用
-原来的初始资金目标份数逻辑。
+现金缓冲、单票上限、佣金、最低佣金和滑点生成目标数量。`max_turnover`按完整当前组合计算，
+包括卖出本次评分集外的原持仓；目标袖套与换手预算不可同时满足时明确失败。未配置`allocation`的
+旧配方继续使用原来的初始资金目标份数逻辑。
 
 显式`execution`要求`listed`、`delisted`、`tradable`、`limit_up`、`limit_down`五个完整的
 PIT状态字段。`dynamic`模式另要求一个`universe`字段。退出研究池只把正常目标权重降为零，
