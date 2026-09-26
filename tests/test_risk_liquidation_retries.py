@@ -36,7 +36,7 @@ def test_liquidation_retries_from_ledger_after_partial_ioc_fill():
         AppConfig(rebalance_freq="daily"),
         "liquidation-retries",
         target_schedule={dates[0]: {"000001": 9_000}},
-        risk_limits={"max_drawdown": 0.05, "drawdown_action": "liquidate"},
+        risk_limits={"max_drawdown": 0.05, "drawdown_action": "liquidate", "max_turnover": 2},
     )
 
     orders = replay.frames["orders"]
@@ -77,9 +77,7 @@ def test_liquidation_retries_from_ledger_after_partial_ioc_fill():
     first_sell_day = pd.to_datetime(sell_fills.iloc[0]["event_time"], utc=True).date()
     assert first_sell_day == dates[3]
 
-    risk_events = [
-        check for check in replay.risk_checks if check.get("halt_reason") == "drawdown"
-    ]
+    risk_events = [check for check in replay.risk_checks if check.get("halt_reason") == "drawdown"]
     assert risk_events
     assert all(check["has_critical"] for check in risk_events)
     assert all(
