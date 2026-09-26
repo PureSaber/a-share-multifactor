@@ -101,3 +101,12 @@ def test_cash_and_split_replay_preserves_nav_and_balances(tmp_path, ratio, ex_pr
     assert replay.ledger.dividend_receivable_balance("CNY", instrument_id="600036") == 0
     assert entitled.nav.to_decimal() == paid.nav.to_decimal() == 10000
     assert paid.cash_balances["CNY"].to_decimal() == 5500
+
+    actions.loc[0, "pay_date"] = dates[-1] + pd.Timedelta(days=10)
+    unpaid = action_events(actions, raw, adjusted, dates[0], dates[-1])
+    assert [event.action_type for event in unpaid] == ["cash_dividend_entitlement"]
+    replay = _replay(raw, cfg, "unpaid-action", catalog_path=catalog, corporate_actions=unpaid)
+    assert replay.ledger.dividend_receivable_balance("CNY", instrument_id="600036") == 500
+    final = replay.ledger.snapshot(replay.events[-1].available_at)
+    assert final.nav.to_decimal() == 10000
+    assert final.cash_balances["CNY"].to_decimal() == 5000

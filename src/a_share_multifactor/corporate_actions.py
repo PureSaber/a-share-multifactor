@@ -80,7 +80,7 @@ def action_events(
                 ratio=fixed(ratio) if ratio != 1 else None,
             )
         )
-        if deferred_cash:
+        if deferred_cash and row.pay_date <= end:
             paid_at = (
                 row.pay_date.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9)
             ).tz_convert("UTC")
