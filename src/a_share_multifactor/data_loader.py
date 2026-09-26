@@ -65,6 +65,13 @@ def merge_price_fundamentals(
         return prices.copy()
 
     fund = fundamentals.copy()
+    # Published fundamentals own these columns. Embedded price-cache values must
+    # never survive a PIT join or turn into silently ignored _x/_y columns.
+    fact_cols = [column for column in fund if column not in {"symbol", "date", "available_at"}]
+    market_fields = {"open", "high", "low", "close", "volume", "amount"}
+    if market_fields.intersection(fact_cols):
+        raise ValueError("Fundamental payload cannot overwrite market prices or volume")
+    prices = prices.drop(columns=[column for column in fact_cols if column in prices])
     fund["date"] = pd.to_datetime(fund["date"]).dt.normalize()
     if "available_at" not in fund.columns:
         if require_availability_timestamp:
@@ -74,7 +81,9 @@ def merge_price_fundamentals(
         fund["available_at"] = fund["date"]
     fund["available_at"] = pd.to_datetime(fund["available_at"])
     if pit and require_availability_timestamp and fund["available_at"].isna().any():
-        raise ValueError("PIT fundamentals require known publication timestamps; found unknown availability")
+        raise ValueError(
+            "PIT fundamentals require known publication timestamps; found unknown availability"
+        )
     if fundamental_lag_days > 0:
         fund["available_at"] = fund["available_at"] + pd.Timedelta(days=fundamental_lag_days)
 
@@ -87,9 +96,7 @@ def merge_price_fundamentals(
         return merged.sort_values(["date", "symbol"]).reset_index(drop=True)
 
     fact_cols = [
-        column
-        for column in fund.columns
-        if column not in {"symbol", "date", "available_at"}
+        column for column in fund.columns if column not in {"symbol", "date", "available_at"}
     ]
     merged = point_in_time_join(
         prices,
