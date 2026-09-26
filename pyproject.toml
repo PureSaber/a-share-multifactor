@@ -21,9 +21,9 @@ dependencies = [
     "matplotlib>=3.8",
     "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@fbbad913c9e592fdcbf8b473c4230e2da8594cef",
     "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@ba021bbe11696f0bd5cda0ee047515793f11855d",
-    "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@459f5cc6b2c45db9ca4421cbf6de5f1b5cfc9022",
+    "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@e9bf4ca2db6e7fb632cf3b091227b4e61ff84bda",
     "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@bace19c01cf3ecd77fbbb4a5bc75f2ce3498902f",
-    "quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@6276ab9e3784ebbd5007006662b792d4b077ad70",
+    "quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@ede86a080eab25054756bc95ef6d31353a99122b",
 ]
 
 [project.optional-dependencies]
