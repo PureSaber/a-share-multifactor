@@ -66,8 +66,8 @@ python -m a_share_multifactor.decision_workflow --inputs <run>/inputs --as-of 20
 4. 最新因子使用捕获时的复权价格比率，执行和估值使用未复权价。旧 forward 信号固定保存，
    后续复权版本不能改写旧信号。整个历史区间的因子诊断仍是当前数据版本下的回顾研究，
    不是已经验证历史可获得时间的回测。
-5. 现有日线接口缺少完整的分红／拆股现金流账本。模拟区间内复权价与原始价不一致时阻断，
-   不输出跨公司行动的模拟收益。未来扩展需接入公司行动与真实交易状态数据。
+5. 公司行动只有在公告、股权登记、除权与发放日证据齐全且能解释复权差异时进入账本。现金分红
+   在除息日确认为不可用的应收资产，在真实付款日转成现金；延期送股仍因缺少股份应收账本而阻断。
 6. 当前名单不是历史沪深 300，存在名单选择偏差。walk-forward/FDR 只描述指定因子的诊断，
    不作为自动批准真实投资的依据；最终未触碰留出区间和长期 forward 证据尚待积累。
 
@@ -75,3 +75,24 @@ python -m a_share_multifactor.decision_workflow --inputs <run>/inputs --as-of 20
 不再同时生成与账户不同的 standard/v1 回放。旧 retail 提前退出、最短持有规则未在 QExec
 中实现，调用时明确拒绝。未复权执行价格和严格 PIT 的前置检查可能阻断旧缓存／配置，需更新输入，
 不能通过关闭检查恢复“认证”标签。
+
+## 研究配方的组合与历史执行选项
+
+`preflight_recipe(recipe,candidate=None)`只读取并校验输入，不运行回放、不生成成交。返回的
+`asm.research-preflight/v1`报告包含`passed`、`issues`、因子`requirements`、逐标的覆盖率以及
+归一化后的`allocation`和`execution`。`instrument_master`逐标的列出需要覆盖的已上市会话；
+规则参数在开盘前尚不可用或已超出有效期时返回`INSTRUMENT_MASTER_PIT_COVERAGE`，不进入零成交
+的伪成功回放。从未上市且没有交易的标的不要求历史规则参数。界面预检与正式执行共用同一准备路径。
+
+显式`allocation`支持`equal`、`inverse_vol`和`cost_aware`。后者调用`quant-portfolio`既有
+均值方差优化器。每次调仓在信号收盘后读取同一QExec账本的当前NAV、持仓和收盘价，再按整手、
+现金缓冲、单票上限、佣金、最低佣金和滑点生成目标数量；未配置`allocation`的旧配方继续使用
+原来的初始资金目标份数逻辑。
+
+显式`execution`要求`listed`、`delisted`、`tradable`、`limit_up`、`limit_down`五个完整的
+PIT状态字段。`dynamic`模式另要求一个`universe`字段。退出研究池只把正常目标权重降为零，
+仍需按市场状态卖出；它不是退市证据。停牌冻结持仓，涨停禁买、跌停禁卖，A股T+1继续由QExec
+规则和精确账本判断。每个会话使用IOC订单，拒单、部分成交后的到期和有界逐会话重试写入
+`execution_diagnostics.json`。显式退市时如果
+仍有持仓而输入没有当前实现支持的处置事实，回放明确失败，不生成虚假卖单或成交。日线模型只接受
+开盘撮合前已知的状态；开盘后才出现且会改变当日状态的记录会因无法因果排序而失败。

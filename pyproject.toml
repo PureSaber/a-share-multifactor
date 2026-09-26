@@ -20,9 +20,10 @@ dependencies = [
     "pyarrow>=14.0",
     "matplotlib>=3.8",
     "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@fbbad913c9e592fdcbf8b473c4230e2da8594cef",
-    "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@ba021bbe11696f0bd5cda0ee047515793f11855d",
-    "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@e9bf4ca2db6e7fb632cf3b091227b4e61ff84bda",
-    "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@bace19c01cf3ecd77fbbb4a5bc75f2ce3498902f",
+    "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@d12247ba5d3fa50ebb7179eee6df0f5af9802abd",
+    "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@3d975916763e77f214fc9ac61472d5664a54e3d7",
+    "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@e65b074f3fe18f51858f857ecab1751da0ff56af",
+    "quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@c6be035570ea968f7f13a7c779060c014f560a9f",
     "quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@ede86a080eab25054756bc95ef6d31353a99122b",
 ]
 

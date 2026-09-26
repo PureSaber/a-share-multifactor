@@ -77,5 +77,27 @@ def test_cash_and_split_replay_preserves_nav_and_balances(tmp_path, ratio, ex_pr
     with pytest.raises(ValueError, match="matching cashflow"):
         action_events(None, raw, adjusted, dates[0], dates[-1])
     actions.loc[0, "pay_date"] = dates[-1]
-    with pytest.raises(ValueError, match="Deferred"):
-        action_events(actions, raw, adjusted, dates[0], dates[-1])
+    deferred = action_events(actions, raw, adjusted, dates[0], dates[-1])
+    assert [event.action_type for event in deferred] == [
+        "cash_dividend_entitlement",
+        "cash_dividend_payment",
+    ]
+    replay = _replay(raw, cfg, "deferred-action", catalog_path=catalog, corporate_actions=deferred)
+    payment_time = deferred[1].available_at
+    entitled = max(
+        (
+            snapshot
+            for snapshot in replay.ledger.recorded_snapshots
+            if pd.Timestamp(snapshot.event_time).tz_convert("Asia/Shanghai").date()
+            == deferred[0].effective_date
+        ),
+        key=lambda snapshot: snapshot.event_time,
+    )
+    paid = next(
+        snapshot
+        for snapshot in replay.ledger.recorded_snapshots
+        if snapshot.event_time == payment_time
+    )
+    assert replay.ledger.dividend_receivable_balance("CNY", instrument_id="600036") == 0
+    assert entitled.nav.to_decimal() == paid.nav.to_decimal() == 10000
+    assert paid.cash_balances["CNY"].to_decimal() == 5500
