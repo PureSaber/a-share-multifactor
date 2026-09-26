@@ -483,6 +483,8 @@ class _TargetWeightStrategy:
         costs=None,
         broker=None,
         execution_policy=None,
+        risk_schedule=None,
+        risk_gate=None,
     ) -> None:
         self.schedule = schedule
         self.ledger = ledger
@@ -495,6 +497,8 @@ class _TargetWeightStrategy:
         self.costs = costs
         self.broker = broker
         self.execution_policy = execution_policy
+        self.risk_schedule = risk_schedule or {}
+        self.risk_gate = risk_gate
         self.reset()
 
     def reset(self) -> None:
@@ -503,6 +507,7 @@ class _TargetWeightStrategy:
         self._peak_nav = float(self.initial_capital)
         self._closing_prices = {}
         self._risk_halted = False
+        self._risk_halt_reason = None
         self._risk_checks = []
         self._allocation_decisions = []
         self._retry_diagnostics = []
@@ -516,6 +521,7 @@ class _TargetWeightStrategy:
             "peak_nav": self._peak_nav,
             "closing_prices": self._closing_prices.copy(),
             "risk_halted": self._risk_halted,
+            "risk_halt_reason": self._risk_halt_reason,
             "risk_checks": list(self._risk_checks),
             "allocation_decisions": list(self._allocation_decisions),
             "retry_diagnostics": list(self._retry_diagnostics),
@@ -529,6 +535,7 @@ class _TargetWeightStrategy:
         self._peak_nav = state["peak_nav"]
         self._closing_prices = state["closing_prices"].copy()
         self._risk_halted = state["risk_halted"]
+        self._risk_halt_reason = state["risk_halt_reason"]
         self._risk_checks = list(state["risk_checks"])
         self._allocation_decisions = list(state["allocation_decisions"])
         self._retry_diagnostics = list(state["retry_diagnostics"])
@@ -585,6 +592,11 @@ class _TargetWeightStrategy:
                 invested_limit=plan["invested_limit"],
                 max_weight=plan["max_weight"],
                 config=settings,
+                **{
+                    key: plan[key]
+                    for key in ("factor_exposures", "factor_bounds", "covariance_override")
+                    if key in plan
+                },
             )
             target = {}
             catalog = self.catalog.set_index("symbol")
@@ -613,7 +625,7 @@ class _TargetWeightStrategy:
         )
         return target
 
-    def _portfolio_check(self, *, target, current, nav: Decimal, event) -> bool:
+    def _portfolio_check(self, *, target, current, nav: Decimal, event, stage="target") -> bool:
         symbols = set(target) | set(current)
         missing_marks = sorted(symbol for symbol in symbols if symbol not in self._closing_prices)
         if missing_marks:
@@ -651,7 +663,9 @@ class _TargetWeightStrategy:
             result = check_decision_portfolio(
                 target_weights=target_weights,
                 current_weights=current_weights,
-                classifications=self.risk_limits.get("classifications", {}),
+                classifications=self.risk_schedule.get(event.trading_day, {}).get(
+                    "classifications", self.risk_limits.get("classifications", {})
+                ),
                 limits=DecisionPortfolioLimits.from_mapping(self.risk_limits),
                 estimated_cost_rate=(
                     None
@@ -660,10 +674,20 @@ class _TargetWeightStrategy:
                 ),
             )
             payload = result.to_dict()
+            if self.risk_schedule:
+                from a_share_multifactor.research_risk import check_model_target
+
+                item = self.risk_schedule[event.trading_day]
+                report, alerts = check_model_target(item, target_weights)
+                payload["factor_risk"] = report
+                payload["alerts"].extend(alerts)
+                payload["count"] = len(payload["alerts"])
+                payload["has_critical"] = payload["has_critical"] or bool(alerts)
         self._risk_checks.append(
             {
                 "session": event.trading_day.isoformat(),
                 "checked_at": pd.Timestamp(event.available_at).isoformat(),
+                "stage": stage,
                 **payload,
             }
         )
@@ -697,13 +721,87 @@ class _TargetWeightStrategy:
         nav_decimal = _decimal(snapshot.nav)
         nav = float(nav_decimal)
         self._peak_nav = max(self._peak_nav, nav)
-        if event.trading_day in self.blocked_dates:
+        if nav <= 0:
             return ()
+        current = {
+            symbol: int(_decimal(quantity)) for symbol, quantity in snapshot.positions.items()
+        }
+        if self.risk_schedule or self.risk_limits:
+            compliant = self._portfolio_check(
+                target=current, current=current, nav=nav_decimal, event=event, stage="realized"
+            )
+            if (
+                not compliant
+                and any(current.values())
+                and (
+                    not self._risk_halted
+                    or self.risk_limits.get("exposure_breach_action", "halt") == "liquidate"
+                )
+            ):
+                self._risk_halted = True
+                self._risk_halt_reason = "exposure_breach"
         if self._peak_nav and 1 - nav / self._peak_nav > self.risk_limits.get("max_drawdown", 1):
+            if (
+                not self._risk_halted
+                or self.risk_limits.get("drawdown_action", "halt") == "liquidate"
+            ):
+                self._risk_halt_reason = "drawdown"
             self._risk_halted = True
         if self._risk_halted:
             self._deferred_targets = {}
             self._target_active = False
+            if self.broker is not None:
+                for order in tuple(self.broker.open_orders):
+                    self.broker.cancel(
+                        order.order_id,
+                        idempotency_key=f"risk-halt:{order.order_id}",
+                        created_at=event.available_at,
+                    )
+                    self.risk_gate.release_order(order)
+            action_field = (
+                "drawdown_action"
+                if self._risk_halt_reason == "drawdown"
+                else "exposure_breach_action"
+            )
+            action = self.risk_limits.get(action_field, "halt")
+            self._risk_checks.append(
+                {
+                    "session": event.trading_day.isoformat(),
+                    "checked_at": pd.Timestamp(event.available_at).isoformat(),
+                    action_field: action,
+                    "halt_reason": self._risk_halt_reason,
+                    "drawdown": 1 - nav / self._peak_nav,
+                    "has_critical": True,
+                    "alerts": [
+                        {
+                            "rule_id": "portfolio." + self._risk_halt_reason,
+                            "severity": "critical",
+                            "message": "Risk kill switch is latched",
+                        }
+                    ],
+                }
+            )
+            if action == "halt":
+                return ()
+            # A kill switch liquidates through the same broker and exact ledger;
+            # ordinary turnover/cash/active-risk targets must not forbid exits.
+            return tuple(
+                OrderIntent(
+                    idempotency_key=f"risk-halt:{event.trading_day}:{symbol}",
+                    account_id=context.account_id,
+                    strategy_id=context.strategy_id,
+                    instrument_id=symbol,
+                    side=Side.SELL,
+                    quantity=quantity,
+                    order_type=OrderType.MARKET,
+                    time_in_force=TimeInForce.IOC,
+                    reduce_only=True,
+                    created_at=event.available_at,
+                )
+                for symbol, quantity in snapshot.positions.items()
+                if quantity.units > 0
+            )
+        if event.trading_day in self.blocked_dates:
             return ()
         new_target = False
         if self.allocation_schedule is not None and event.trading_day in self.allocation_schedule:
@@ -721,11 +819,6 @@ class _TargetWeightStrategy:
             new_target = event.trading_day in self.schedule
         if not target and not new_target and not self._target_active:
             return ()
-        if nav <= 0:
-            return ()
-        current = {
-            symbol: int(_decimal(quantity)) for symbol, quantity in snapshot.positions.items()
-        }
         if not self._portfolio_check(target=target, current=current, nav=nav_decimal, event=event):
             self._deferred_targets = {}
             return ()
@@ -807,6 +900,7 @@ class _TargetWeightStrategy:
                 quantity=FixedPoint(abs(quantity), 0),
                 order_type=OrderType.MARKET,
                 time_in_force=TimeInForce.IOC,
+                reduce_only=quantity < 0,
                 created_at=event.available_at,
             )
             for symbol, quantity in trades.items()
@@ -872,6 +966,7 @@ class CertifiedReplay:
     risk_checks: tuple[dict[str, Any], ...]
     allocation_decisions: tuple[dict[str, Any], ...] = ()
     retry_diagnostics: tuple[dict[str, Any], ...] = ()
+    runtime_risk_events: tuple[str, ...] = ()
 
 
 def _frame(name: str, rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -885,6 +980,7 @@ def _replay(
     *,
     catalog_path: Path = _CATALOG_PATH,
     risk_limits: dict | None = None,
+    risk_schedule: dict | None = None,
     corporate_actions: tuple = (),
     target_schedule: dict | None = None,
     allocation_schedule: dict | None = None,
@@ -947,6 +1043,33 @@ def _replay(
         money_scale=_MONEY_SCALE,
     )
     broker = DeterministicBroker()
+    from quant_risk_monitor.cross_asset import (
+        CrossAssetRiskLimits,
+        CrossAssetRiskPolicy,
+        PITRiskInputs,
+        PriceObservation,
+    )
+
+    limits = risk_limits or {}
+    policy = CrossAssetRiskPolicy(
+        instruments=instruments,
+        limits=CrossAssetRiskLimits(
+            max_gross_leverage=limits.get("max_gross_weight"),
+            max_instrument_concentration=limits.get("max_single_weight"),
+        ),
+        inputs=PITRiskInputs(
+            prices=tuple(
+                PriceObservation(
+                    instrument_id=event.instrument_id,
+                    price=event.close_price,
+                    observed_at=event.available_at,
+                    available_at=event.available_at,
+                )
+                for event in bars
+            )
+        ),
+    )
+    risk_gate = ConfiguredAShareRiskGate(instruments=instruments, ledger=ledger, policies=(policy,))
     strategy = _TargetWeightStrategy(
         _target_schedule(scored_panel, config, catalog_path=catalog_path)
         if target_schedule is None
@@ -960,6 +1083,8 @@ def _replay(
         costs=costs,
         broker=broker,
         execution_policy=execution_policy,
+        risk_schedule=risk_schedule,
+        risk_gate=risk_gate,
         blocked_dates=set(
             pd.to_datetime(
                 scored_panel.loc[~scored_panel["decision_allowed"].astype(bool), "date"]
@@ -974,7 +1099,7 @@ def _replay(
         strategy_id=strategy_id,
         strategy=strategy,
         broker=broker,
-        risk_gate=ConfiguredAShareRiskGate(instruments=instruments, ledger=ledger),
+        risk_gate=risk_gate,
         matching_model=ConfiguredBarMatchingModel(
             instruments, slippage=costs.slippage, participation_rate=costs.participation_rate
         ),
@@ -1268,6 +1393,7 @@ def _replay(
         strategy.risk_checks,
         strategy.allocation_decisions,
         strategy.retry_diagnostics,
+        artifacts.risk_events,
     )
 
 
