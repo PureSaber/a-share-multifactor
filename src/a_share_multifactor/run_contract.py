@@ -15,7 +15,14 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from quant_data_kit import AssetClass, BarEvent, FixedPoint, InstrumentSpec, SymbolMapping
+from quant_data_kit import (
+    AssetClass,
+    BarEvent,
+    FixedPoint,
+    InstrumentSpec,
+    StatusEvent,
+    SymbolMapping,
+)
 from quant_execution import (
     DeterministicBroker,
     DeterministicRunEngine,
@@ -50,6 +57,7 @@ _DEPENDENCIES = {
     "quant-execution": "v0.5.1",
     "quant-lab": "v0.3.1",
     "quant-factors": "v0.3.0",
+    "quant-portfolio": "v0.4.2",
     "quant-risk-monitor": "v0.4.0",
 }
 _V2_COLUMNS = {
@@ -313,25 +321,30 @@ def load_fixture_catalog(path: Path = _CATALOG_PATH) -> pd.DataFrame:
 
 
 def build_instrument_master(
-    panel: pd.DataFrame, *, catalog_path: Path = _CATALOG_PATH
+    panel: pd.DataFrame,
+    *,
+    catalog_path: Path = _CATALOG_PATH,
+    symbols: list[str] | None = None,
 ) -> tuple[dict[str, InstrumentSpec], tuple[SymbolMapping, ...]]:
     """Build PIT InstrumentSpec and SymbolMapping objects from the catalog."""
     catalog = load_fixture_catalog(catalog_path).set_index("symbol")
-    symbols = sorted(panel["symbol"].astype(str).unique())
+    symbols = sorted(panel["symbol"].astype(str).unique()) if symbols is None else sorted(symbols)
     missing = sorted(set(symbols) - set(catalog.index))
     if missing:
         raise ValueError(
             f"certified replay requires explicit fixture catalog entries; missing={missing}"
         )
-    first_date = pd.to_datetime(panel["date"]).min().date()
-    last_date = pd.to_datetime(panel["date"]).max().date()
     specs: dict[str, InstrumentSpec] = {}
     mappings: list[SymbolMapping] = []
     for symbol in symbols:
         row = catalog.loc[symbol]
         effective_from = _utc(row["effective_from"]).to_pydatetime()
         effective_to = _utc(row["effective_to"]).to_pydatetime()
-        if first_date < effective_from.date() or last_date >= effective_to.date():
+        symbol_dates = pd.to_datetime(panel.loc[panel["symbol"].astype(str).eq(symbol), "date"])
+        if not symbol_dates.empty and (
+            symbol_dates.min().date() < effective_from.date()
+            or symbol_dates.max().date() >= effective_to.date()
+        ):
             raise ValueError(f"panel dates for {symbol} fall outside fixture validity window")
         price_scale = int(row["price_scale"])
         specs[symbol] = InstrumentSpec(
@@ -465,6 +478,11 @@ class _TargetWeightStrategy:
         risk_limits=None,
         blocked_dates=None,
         initial_capital=0,
+        allocation_schedule=None,
+        catalog=None,
+        costs=None,
+        broker=None,
+        execution_policy=None,
     ) -> None:
         self.schedule = schedule
         self.ledger = ledger
@@ -472,34 +490,128 @@ class _TargetWeightStrategy:
         self.risk_limits = risk_limits or {}
         self.blocked_dates = blocked_dates or set()
         self.initial_capital = initial_capital
+        self.allocation_schedule = allocation_schedule
+        self.catalog = catalog
+        self.costs = costs
+        self.broker = broker
+        self.execution_policy = execution_policy
         self.reset()
 
     def reset(self) -> None:
         self._deferred_targets = {}
+        self._target_active = False
         self._peak_nav = float(self.initial_capital)
         self._closing_prices = {}
         self._risk_halted = False
         self._risk_checks = []
+        self._allocation_decisions = []
+        self._retry_diagnostics = []
+        self._attempts = {}
+        self._target_revision = 0
 
     def capture_state(self):
         return {
             "deferred_targets": self._deferred_targets.copy(),
+            "target_active": self._target_active,
             "peak_nav": self._peak_nav,
             "closing_prices": self._closing_prices.copy(),
             "risk_halted": self._risk_halted,
             "risk_checks": list(self._risk_checks),
+            "allocation_decisions": list(self._allocation_decisions),
+            "retry_diagnostics": list(self._retry_diagnostics),
+            "attempts": self._attempts.copy(),
+            "target_revision": self._target_revision,
         }
 
     def restore_state(self, state):
         self._deferred_targets = state["deferred_targets"].copy()
+        self._target_active = state["target_active"]
         self._peak_nav = state["peak_nav"]
         self._closing_prices = state["closing_prices"].copy()
         self._risk_halted = state["risk_halted"]
         self._risk_checks = list(state["risk_checks"])
+        self._allocation_decisions = list(state["allocation_decisions"])
+        self._retry_diagnostics = list(state["retry_diagnostics"])
+        self._attempts = state["attempts"].copy()
+        self._target_revision = state["target_revision"]
 
     @property
     def risk_checks(self) -> tuple[dict[str, Any], ...]:
         return tuple(self._risk_checks)
+
+    @property
+    def allocation_decisions(self) -> tuple[dict[str, Any], ...]:
+        return tuple(self._allocation_decisions)
+
+    @property
+    def retry_diagnostics(self) -> tuple[dict[str, Any], ...]:
+        return tuple(self._retry_diagnostics)
+
+    def _allocation_target(self, day: date, snapshot, nav: Decimal) -> dict[str, int]:
+        from quant_portfolio import research_allocation_weights, validate_research_allocation
+
+        plan = self.allocation_schedule[day]
+        scores = plan["scores"]
+        settings = validate_research_allocation(plan["allocation"])
+        held = {
+            str(symbol): _decimal(quantity)
+            for symbol, quantity in snapshot.positions.items()
+            if _decimal(quantity) != 0
+        }
+        missing_current_marks = sorted(set(held) - set(self._closing_prices))
+        if missing_current_marks:
+            raise ValueError(
+                "Current-NAV allocation is missing a close for held positions: "
+                f"{missing_current_marks}"
+            )
+        current_weights = pd.Series(
+            {
+                symbol: float(quantity * _decimal(self._closing_prices[symbol]) / nav)
+                for symbol, quantity in held.items()
+            },
+            dtype=float,
+        )
+        if scores.empty or plan["invested_limit"] <= 0:
+            if float(current_weights.abs().sum()) > float(settings["max_turnover"]) + 1e-10:
+                raise ValueError("allocation.max_turnover is infeasible for liquidation")
+            weights = pd.Series(dtype=float)
+            target = {}
+        else:
+            weights = research_allocation_weights(
+                scores,
+                plan["trailing_returns"],
+                current_weights,
+                plan["linear_costs"],
+                invested_limit=plan["invested_limit"],
+                max_weight=plan["max_weight"],
+                config=settings,
+            )
+            target = {}
+            catalog = self.catalog.set_index("symbol")
+            for symbol, weight in weights.sort_index().items():
+                if symbol not in self._closing_prices:
+                    raise ValueError(f"Current-NAV allocation is missing a close for {symbol}")
+                lot = int(catalog.loc[symbol, "lot_size"])
+                budget = max(
+                    Decimal(0),
+                    nav * Decimal(str(weight)) - Decimal(str(self.costs.min_commission)),
+                )
+                unit_cost = _decimal(self._closing_prices[symbol]) * Decimal(
+                    str((1 + self.costs.slippage) * (1 + self.costs.commission))
+                )
+                shares = int((budget / unit_cost) // lot) * lot
+                if shares > 0:
+                    target[str(symbol)] = shares
+        self._allocation_decisions.append(
+            {
+                "session": day.isoformat(),
+                "nav": float(nav),
+                "mode": plan["allocation"]["mode"],
+                "weights": {str(key): float(value) for key, value in weights.items()},
+                "targets": target.copy(),
+            }
+        )
+        return target
 
     def _portfolio_check(self, *, target, current, nav: Decimal, event) -> bool:
         symbols = set(target) | set(current)
@@ -558,7 +670,19 @@ class _TargetWeightStrategy:
         return not payload["has_critical"]
 
     def on_event(self, context: StrategyContext, event: BarEvent) -> tuple[OrderIntent, ...]:
-        if self.ledger is None or not hasattr(event, "close_price"):
+        if self.ledger is None:
+            return ()
+        if isinstance(event, StatusEvent):
+            if event.status.lower() == "closed":
+                snapshot = self.ledger.snapshot(event.available_at)
+                position = snapshot.positions.get(event.instrument_id)
+                if position is not None and position.units:
+                    raise ValueError(
+                        "Held unlisted position requires explicit supported disposition evidence; "
+                        "universe exit is not disposition evidence"
+                    )
+            return ()
+        if not hasattr(event, "close_price"):
             return ()
         self._closing_prices[event.instrument_id] = event.close_price
         return self._after_close(context, event)
@@ -579,9 +703,23 @@ class _TargetWeightStrategy:
             self._risk_halted = True
         if self._risk_halted:
             self._deferred_targets = {}
+            self._target_active = False
             return ()
-        target = self.schedule.get(event.trading_day, self._deferred_targets)
-        if not target:
+        new_target = False
+        if self.allocation_schedule is not None and event.trading_day in self.allocation_schedule:
+            target = self._allocation_target(event.trading_day, snapshot, nav_decimal)
+            new_target = True
+        else:
+            target = self.schedule.get(
+                event.trading_day,
+                (
+                    self._deferred_targets
+                    if self.execution_policy is None or self._target_active
+                    else {}
+                ),
+            )
+            new_target = event.trading_day in self.schedule
+        if not target and not new_target and not self._target_active:
             return ()
         if nav <= 0:
             return ()
@@ -591,16 +729,77 @@ class _TargetWeightStrategy:
         if not self._portfolio_check(target=target, current=current, nav=nav_decimal, event=event):
             self._deferred_targets = {}
             return ()
-        delta = {
-            symbol: target.get(symbol, 0) - current.get(symbol, 0)
-            for symbol in sorted(set(target) | set(current))
-        }
+        if self.execution_policy is not None:
+            if new_target:
+                self._deferred_targets = dict(target)
+                self._target_active = True
+                self._target_revision += 1
+                self._attempts = {}
+            target = self._deferred_targets
+            projected = current.copy()
+            for order in self.broker.open_orders:
+                remaining = order.intent.quantity.units - order.filled_quantity.units
+                direction = 1 if order.intent.side is Side.BUY else -1
+                projected[order.intent.instrument_id] = (
+                    projected.get(order.intent.instrument_id, 0) + direction * remaining
+                )
+            delta = {
+                symbol: target.get(symbol, 0) - projected.get(symbol, 0)
+                for symbol in sorted(set(target) | set(projected))
+            }
+        else:
+            delta = {
+                symbol: target.get(symbol, 0) - current.get(symbol, 0)
+                for symbol in sorted(set(target) | set(current))
+            }
         sells = {symbol: quantity for symbol, quantity in delta.items() if quantity < 0}
-        self._deferred_targets = dict(target) if sells else {}
+        if self.execution_policy is None:
+            self._deferred_targets = dict(target) if sells else {}
+        elif sells:
+            self._deferred_targets = dict(target)
         trades = sells or {symbol: quantity for symbol, quantity in delta.items() if quantity > 0}
+        if self.execution_policy is not None:
+            if not trades and not self.broker.open_orders:
+                self._deferred_targets = {}
+                self._target_active = False
+                return ()
+            admitted = {}
+            max_attempts = 1 + int(self.execution_policy["max_retry_sessions"])
+            for symbol, quantity in trades.items():
+                side = "buy" if quantity > 0 else "sell"
+                key = (self._target_revision, symbol, side)
+                attempts = self._attempts.get(key, 0)
+                if attempts >= max_attempts:
+                    diagnostic = {
+                        "target_revision": self._target_revision,
+                        "session": event.trading_day.isoformat(),
+                        "symbol": symbol,
+                        "side": side,
+                        "attempts": attempts,
+                        "reason": "max_retry_sessions_exhausted",
+                    }
+                    if not any(
+                        item["target_revision"] == self._target_revision
+                        and item["symbol"] == symbol
+                        and item["side"] == side
+                        for item in self._retry_diagnostics
+                    ):
+                        self._retry_diagnostics.append(diagnostic)
+                    continue
+                self._attempts[key] = attempts + 1
+                admitted[symbol] = quantity
+            trades = admitted
         return tuple(
             OrderIntent(
-                idempotency_key=f"{context.strategy_id}:{event.trading_day}:{symbol}:{'buy' if quantity > 0 else 'sell'}",
+                idempotency_key=(
+                    f"{context.strategy_id}:{event.trading_day}:{symbol}:"
+                    f"{'buy' if quantity > 0 else 'sell'}"
+                    + (
+                        f":r{self._attempts.get((self._target_revision, symbol, 'buy' if quantity > 0 else 'sell'), 0)}"
+                        if self.execution_policy is not None
+                        else ""
+                    )
+                ),
                 account_id=context.account_id,
                 strategy_id=context.strategy_id,
                 instrument_id=symbol,
@@ -671,6 +870,8 @@ class CertifiedReplay:
     account_id: str
     strategy_id: str
     risk_checks: tuple[dict[str, Any], ...]
+    allocation_decisions: tuple[dict[str, Any], ...] = ()
+    retry_diagnostics: tuple[dict[str, Any], ...] = ()
 
 
 def _frame(name: str, rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -686,6 +887,9 @@ def _replay(
     risk_limits: dict | None = None,
     corporate_actions: tuple = (),
     target_schedule: dict | None = None,
+    allocation_schedule: dict | None = None,
+    status_events: tuple = (),
+    execution_policy: dict | None = None,
     account_id: str = _ACCOUNT_ID,
     strategy_id: str = _STRATEGY_ID,
 ) -> CertifiedReplay:
@@ -706,7 +910,14 @@ def _replay(
         or costs.initial_capital <= 0
     ):
         raise ValueError("Invalid execution costs or allocation limits")
-    instruments, mappings = build_instrument_master(scored_panel, catalog_path=catalog_path)
+    replay_symbols = sorted(
+        set(scored_panel["symbol"].astype(str)) | {event.instrument_id for event in status_events}
+    )
+    instruments, mappings = build_instrument_master(
+        scored_panel,
+        catalog_path=catalog_path,
+        symbols=replay_symbols,
+    )
     instruments = {
         symbol: replace(
             spec,
@@ -723,7 +934,10 @@ def _replay(
     }
     bars = _build_events(scored_panel, instruments)
     events = tuple(
-        sorted((*bars, *corporate_actions), key=lambda e: (e.available_at, e.instrument_id))
+        sorted(
+            (*bars, *status_events, *corporate_actions),
+            key=lambda e: (e.available_at, e.instrument_id),
+        )
     )
     ledger = _RecordingLedger(
         account_id=account_id,
@@ -732,6 +946,7 @@ def _replay(
         initial_cash={"CNY": _fixed(config.costs.initial_capital, 2)},
         money_scale=_MONEY_SCALE,
     )
+    broker = DeterministicBroker()
     strategy = _TargetWeightStrategy(
         _target_schedule(scored_panel, config, catalog_path=catalog_path)
         if target_schedule is None
@@ -740,6 +955,11 @@ def _replay(
         trigger_symbols={event.trading_day: event.instrument_id for event in bars},
         risk_limits=risk_limits,
         initial_capital=costs.initial_capital,
+        allocation_schedule=allocation_schedule,
+        catalog=load_fixture_catalog(catalog_path),
+        costs=costs,
+        broker=broker,
+        execution_policy=execution_policy,
         blocked_dates=set(
             pd.to_datetime(
                 scored_panel.loc[~scored_panel["decision_allowed"].astype(bool), "date"]
@@ -753,7 +973,7 @@ def _replay(
         account_id=account_id,
         strategy_id=strategy_id,
         strategy=strategy,
-        broker=DeterministicBroker(),
+        broker=broker,
         risk_gate=ConfiguredAShareRiskGate(instruments=instruments, ledger=ledger),
         matching_model=ConfiguredBarMatchingModel(
             instruments, slippage=costs.slippage, participation_rate=costs.participation_rate
@@ -1046,6 +1266,8 @@ def _replay(
         account_id,
         strategy_id,
         strategy.risk_checks,
+        strategy.allocation_decisions,
+        strategy.retry_diagnostics,
     )
 
 

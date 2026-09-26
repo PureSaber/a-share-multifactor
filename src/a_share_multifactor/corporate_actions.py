@@ -47,12 +47,10 @@ def action_events(
             raise ValueError(
                 "Corporate-action record/announcement dates do not establish entitlement"
             )
-        if (cash and row.pay_date != row.ex_date) or (
-            ratio != 1 and row.shares_available_date != row.ex_date
-        ):
-            raise ValueError(
-                "Deferred dividend/share delivery requires a receivables ledger; blocked"
-            )
+        if cash and (pd.isna(row.pay_date) or row.pay_date < row.ex_date):
+            raise ValueError("Cash dividend requires a known payment date on or after ex-date")
+        if ratio != 1 and row.shares_available_date != row.ex_date:
+            raise ValueError("Deferred share delivery requires a share receivables ledger; blocked")
         at = (row.ex_date.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9)).tz_convert("UTC")
 
         def fixed(value):
@@ -61,9 +59,10 @@ def action_events(
                 raise ValueError("Corporate-action precision exceeds eight decimals")
             return FixedPoint(int(scaled), 8)
 
+        deferred_cash = bool(cash and row.pay_date != row.ex_date)
         events.append(
             CorporateActionEvent(
-                event_id=row.event_id,
+                event_id=(row.event_id + ":entitlement" if deferred_cash else row.event_id),
                 instrument_id=row.symbol,
                 event_time=at.to_pydatetime(),
                 available_at=at.to_pydatetime(),
@@ -72,13 +71,36 @@ def action_events(
                 trading_day=row.ex_date.date(),
                 session_id="CN-A-SHARE:" + str(row.ex_date.date()),
                 sequence=0,
-                action_type="cash_and_share_distribution",
+                action_type=(
+                    "cash_dividend_entitlement" if deferred_cash else "cash_and_share_distribution"
+                ),
                 effective_date=row.ex_date.date(),
                 cash_amount=fixed(cash) if cash else None,
                 currency="CNY" if cash else None,
                 ratio=fixed(ratio) if ratio != 1 else None,
             )
         )
+        if deferred_cash and row.pay_date <= end:
+            paid_at = (
+                row.pay_date.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9)
+            ).tz_convert("UTC")
+            events.append(
+                CorporateActionEvent(
+                    event_id=row.event_id + ":payment",
+                    instrument_id=row.symbol,
+                    event_time=paid_at.to_pydatetime(),
+                    available_at=paid_at.to_pydatetime(),
+                    received_at=paid_at.to_pydatetime(),
+                    source=row.source,
+                    trading_day=row.pay_date.date(),
+                    session_id="CN-A-SHARE:" + str(row.pay_date.date()),
+                    sequence=1,
+                    action_type="cash_dividend_payment",
+                    effective_date=row.ex_date.date(),
+                    cash_amount=fixed(cash),
+                    currency="CNY",
+                )
+            )
         by_key[(row.symbol, row.ex_date)] = (float(cash), float(ratio))
     check = raw[(raw.date >= start) & (raw.date <= end)].merge(
         adjusted[["symbol", "date", "close"]],

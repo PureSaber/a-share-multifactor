@@ -307,6 +307,32 @@ def test_installed_dependency_provenance_uses_wheel_commit_or_release(tmp_path, 
     assert set(run_contract._installed_internal_dependencies().values()) == {"a" * 40}
 
 
+def test_portfolio_dependency_is_frozen_and_dirty_state_fails_closed(tmp_path, monkeypatch):
+    assert "quant-portfolio" in run_contract._DEPENDENCIES
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Portfolio Test"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "portfolio@example.invalid"], cwd=tmp_path, check=True
+    )
+    package = tmp_path / "src" / "quant_portfolio"
+    package.mkdir(parents=True)
+    module = package / "__init__.py"
+    module.write_text("# fixture\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=tmp_path, check=True)
+    monkeypatch.setattr(run_contract, "_DEPENDENCIES", {"quant-portfolio": "v0.4.2"})
+    monkeypatch.setattr(
+        run_contract.importlib,
+        "import_module",
+        lambda _: SimpleNamespace(__file__=str(module)),
+    )
+    revision = run_contract._installed_internal_dependencies()["quant-portfolio"]
+    assert len(revision) == 40
+    module.write_text("# dirty\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="clean Git worktree"):
+        run_contract._installed_internal_dependencies()
+
+
 @pytest.mark.parametrize("corruption", ["missing_mark", "unexpected_margin"])
 def test_account_facts_reject_missing_marks_and_margin(corruption, monkeypatch):
     from quant_data_kit import FixedPoint

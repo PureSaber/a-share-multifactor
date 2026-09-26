@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
-from quant_data_kit import AssetClass, FixedPoint
+from quant_data_kit import AssetClass, BarEvent, FixedPoint
 from quant_execution import BarMatchingModel, OrderType, RuleBookRiskGate, Side
 
 
@@ -65,7 +65,11 @@ class ConfiguredBarMatchingModel(BarMatchingModel):
 
     def eligible(self, order, event):
         # A signal made from today's completed close can never fill today's open.
-        return super().eligible(order, event) and event.bar_start > order.intent.created_at
+        return (
+            isinstance(event, BarEvent)
+            and super().eligible(order, event)
+            and event.bar_start > order.intent.created_at
+        )
 
     def _execution_price(self, order, bar):
         price = super()._execution_price(order, bar)
