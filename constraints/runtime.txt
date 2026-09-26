@@ -2,5 +2,5 @@
 akshare==1.18.88.post1
 mini-racer==0.14.1
 # Keep the Windows/Python 3.10 lock reproducible when transitive releases appear.
-joblib==1.5.3
-fonttools==4.63.0
+joblib==1.6.0
+fonttools==4.65.0
