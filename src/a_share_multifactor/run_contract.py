@@ -647,7 +647,7 @@ class _TargetWeightStrategy:
             target_weights = {
                 symbol: Decimal(quantity) * _decimal(self._closing_prices[symbol]) / nav
                 for symbol, quantity in target.items()
-                if quantity > 0
+                if quantity != 0
             }
             current_weights = {
                 symbol: Decimal(quantity) * _decimal(self._closing_prices[symbol]) / nav
@@ -679,11 +679,24 @@ class _TargetWeightStrategy:
                 from a_share_multifactor.research_risk import check_model_target
 
                 item = self.risk_schedule[event.trading_day]
-                report, alerts = check_model_target(item, target_weights)
+                cash_policy_reason = None
+                if not target_weights:
+                    cash_policy_reason = (
+                        "full_cash_exit"
+                        if stage == "target" and current_weights
+                        else "full_cash_state"
+                    )
+                report, alerts = check_model_target(
+                    item,
+                    target_weights,
+                    cash_policy_reason=cash_policy_reason,
+                )
                 payload["factor_risk"] = report
                 payload["alerts"].extend(alerts)
                 payload["count"] = len(payload["alerts"])
-                payload["has_critical"] = payload["has_critical"] or bool(alerts)
+                payload["has_critical"] = any(
+                    alert.get("severity") == "critical" for alert in payload["alerts"]
+                )
         self._risk_checks.append(
             {
                 "session": event.trading_day.isoformat(),

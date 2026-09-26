@@ -181,7 +181,7 @@ def allocation_risk_inputs(item, symbols, risk):
     }
 
 
-def check_model_target(item, weights):
+def check_model_target(item, weights, *, cash_policy_reason=None):
     model = item.get("model")
     if model is None:
         return {}, []
@@ -190,6 +190,11 @@ def check_model_target(item, weights):
         weights={key: float(value) for key, value in weights.items()},
         benchmark_weights=settings["benchmark_weights"] or None,
     )
+    full_cash = not any(float(value) != 0 for value in weights.values())
+    if full_cash:
+        cash_policy_reason = cash_policy_reason or "full_cash_state"
+    else:
+        cash_policy_reason = None
     alerts = []
     for key, values in (
         ("factor_bounds", report.portfolio_exposures),
@@ -198,32 +203,39 @@ def check_model_target(item, weights):
         for factor, (lower, upper) in settings[key].items():
             actual = float(values[factor])
             if actual < lower - 1e-9 or actual > upper + 1e-9:
+                cash_relative_warning = key == "active_factor_bounds" and full_cash
+                details = {
+                    "factor": factor,
+                    "actual": actual,
+                    "lower": lower,
+                    "upper": upper,
+                }
+                if cash_relative_warning:
+                    details["policy_reason"] = cash_policy_reason
                 alerts.append(
                     {
                         "rule_id": "portfolio." + key,
-                        "severity": "critical",
+                        "severity": "warning" if cash_relative_warning else "critical",
                         "message": "Rounded target violates factor exposure bound",
-                        "details": {
-                            "factor": factor,
-                            "actual": actual,
-                            "lower": lower,
-                            "upper": upper,
-                        },
+                        "details": details,
                     }
                 )
     if (
         "max_tracking_error" in settings
         and report.tracking_risk.volatility > settings["max_tracking_error"] + 1e-9
     ):
+        details = {
+            "actual": report.tracking_risk.volatility,
+            "limit": settings["max_tracking_error"],
+        }
+        if full_cash:
+            details["policy_reason"] = cash_policy_reason
         alerts.append(
             {
                 "rule_id": "portfolio.max_tracking_error",
-                "severity": "critical",
+                "severity": "warning" if full_cash else "critical",
                 "message": "Target exceeds annualized tracking-error limit",
-                "details": {
-                    "actual": report.tracking_risk.volatility,
-                    "limit": settings["max_tracking_error"],
-                },
+                "details": details,
             }
         )
     return report.to_dict(), alerts
