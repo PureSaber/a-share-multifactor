@@ -169,6 +169,8 @@ quant-factors @ git+https://github.com/PureSaber/quant-factors.git@0ee0bcd66a94d
     # via a-share-multifactor (pyproject.toml)
 quant-lab @ git+https://github.com/PureSaber/quant-lab.git@938927e5bcad641d46e3bd733e6323719d44aa50
     # via a-share-multifactor (pyproject.toml)
+quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@6742ba15026ada66f188127574a3b4d0a7387a81
+    # via a-share-multifactor (pyproject.toml)
 referencing==0.37.0
     # via
     #   jsonschema

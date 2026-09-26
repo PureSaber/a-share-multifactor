@@ -28,6 +28,7 @@ from quant_execution import (
 )
 from quant_lab import load_and_validate_standard_run, write_standard_run_v2
 from quant_lab.contracts import RunManifest
+from quant_risk_monitor import DecisionPortfolioLimits, check_decision_portfolio
 
 from a_share_multifactor.calendar import rebalance_dates
 from a_share_multifactor.config import AppConfig
@@ -49,6 +50,7 @@ _DEPENDENCIES = {
     "quant-execution": "v0.5.1",
     "quant-lab": "v0.3.1",
     "quant-factors": "v0.3.0",
+    "quant-risk-monitor": "v0.4.0",
 }
 _V2_COLUMNS = {
     "returns": [
@@ -477,6 +479,7 @@ class _TargetWeightStrategy:
         self._peak_nav = float(self.initial_capital)
         self._closing_prices = {}
         self._risk_halted = False
+        self._risk_checks = []
 
     def capture_state(self):
         return {
@@ -484,6 +487,7 @@ class _TargetWeightStrategy:
             "peak_nav": self._peak_nav,
             "closing_prices": self._closing_prices.copy(),
             "risk_halted": self._risk_halted,
+            "risk_checks": list(self._risk_checks),
         }
 
     def restore_state(self, state):
@@ -491,6 +495,67 @@ class _TargetWeightStrategy:
         self._peak_nav = state["peak_nav"]
         self._closing_prices = state["closing_prices"].copy()
         self._risk_halted = state["risk_halted"]
+        self._risk_checks = list(state["risk_checks"])
+
+    @property
+    def risk_checks(self) -> tuple[dict[str, Any], ...]:
+        return tuple(self._risk_checks)
+
+    def _portfolio_check(self, *, target, current, nav: Decimal, event) -> bool:
+        symbols = set(target) | set(current)
+        missing_marks = sorted(symbol for symbol in symbols if symbol not in self._closing_prices)
+        if missing_marks:
+            payload = {
+                "alerts": [
+                    {
+                        "rule_id": "portfolio.missing_mark",
+                        "severity": "critical",
+                        "message": "a current close is required for every portfolio position",
+                        "details": {"symbols": missing_marks},
+                    }
+                ],
+                "count": 1,
+                "has_critical": True,
+                "metrics": {},
+            }
+        else:
+            target_weights = {
+                symbol: Decimal(quantity) * _decimal(self._closing_prices[symbol]) / nav
+                for symbol, quantity in target.items()
+                if quantity > 0
+            }
+            current_weights = {
+                symbol: Decimal(quantity) * _decimal(self._closing_prices[symbol]) / nav
+                for symbol, quantity in current.items()
+                if quantity > 0
+            }
+            turnover = sum(
+                abs(
+                    target_weights.get(symbol, Decimal(0)) - current_weights.get(symbol, Decimal(0))
+                )
+                for symbol in set(target_weights) | set(current_weights)
+            )
+            cost_per_turnover = self.risk_limits.get("estimated_cost_rate_per_turnover")
+            result = check_decision_portfolio(
+                target_weights=target_weights,
+                current_weights=current_weights,
+                classifications=self.risk_limits.get("classifications", {}),
+                limits=DecisionPortfolioLimits.from_mapping(self.risk_limits),
+                estimated_cost_rate=(
+                    None
+                    if cost_per_turnover is None
+                    else turnover * Decimal(str(cost_per_turnover))
+                ),
+            )
+            payload = result.to_dict()
+        self._risk_checks.append(
+            {
+                "session": event.trading_day.isoformat(),
+                "checked_at": pd.Timestamp(event.available_at).isoformat(),
+                **payload,
+            }
+        )
+        return not payload["has_critical"]
 
     def on_event(self, context: StrategyContext, event: BarEvent) -> tuple[OrderIntent, ...]:
         if self.ledger is None or not hasattr(event, "close_price"):
@@ -505,7 +570,8 @@ class _TargetWeightStrategy:
         if event.instrument_id != self.trigger_symbols.get(event.trading_day):
             return ()
         snapshot = self.ledger.snapshot(event.available_at)
-        nav = float(_decimal(snapshot.nav))
+        nav_decimal = _decimal(snapshot.nav)
+        nav = float(nav_decimal)
         self._peak_nav = max(self._peak_nav, nav)
         if event.trading_day in self.blocked_dates:
             return ()
@@ -519,19 +585,12 @@ class _TargetWeightStrategy:
             return ()
         if nav <= 0:
             return ()
-        for symbol, quantity in target.items():
-            # QExec exposes exact positions/marks; reserve some concentration
-            # headroom in the profile to allow ordinary price changes.
-            mark = self._closing_prices.get(symbol)
-            if mark is not None and quantity * float(_decimal(mark)) / nav > self.risk_limits.get(
-                "max_single_weight", 1
-            ):
-                self._deferred_targets = {}
-                return ()
         current = {
-            symbol: int(_decimal(quantity))
-            for symbol, quantity in self.ledger.snapshot(event.available_at).positions.items()
+            symbol: int(_decimal(quantity)) for symbol, quantity in snapshot.positions.items()
         }
+        if not self._portfolio_check(target=target, current=current, nav=nav_decimal, event=event):
+            self._deferred_targets = {}
+            return ()
         delta = {
             symbol: target.get(symbol, 0) - current.get(symbol, 0)
             for symbol in sorted(set(target) | set(current))
@@ -609,6 +668,9 @@ class CertifiedReplay:
     mappings: tuple[SymbolMapping, ...]
     ledger: _RecordingLedger
     frames: dict[str, pd.DataFrame]
+    account_id: str
+    strategy_id: str
+    risk_checks: tuple[dict[str, Any], ...]
 
 
 def _frame(name: str, rows: list[dict[str, Any]]) -> pd.DataFrame:
@@ -624,7 +686,11 @@ def _replay(
     risk_limits: dict | None = None,
     corporate_actions: tuple = (),
     target_schedule: dict | None = None,
+    account_id: str = _ACCOUNT_ID,
+    strategy_id: str = _STRATEGY_ID,
 ) -> CertifiedReplay:
+    if not account_id.strip() or not strategy_id.strip():
+        raise ValueError("account_id and strategy_id must be non-empty")
     if config.costs.retail_mode:
         raise ValueError(
             "QExec replay does not support retail early-exit/min-holding rules; "
@@ -660,7 +726,7 @@ def _replay(
         sorted((*bars, *corporate_actions), key=lambda e: (e.available_at, e.instrument_id))
     )
     ledger = _RecordingLedger(
-        account_id=_ACCOUNT_ID,
+        account_id=account_id,
         base_currency="CNY",
         instruments=instruments,
         initial_cash={"CNY": _fixed(config.costs.initial_capital, 2)},
@@ -684,8 +750,8 @@ def _replay(
     )
     engine = DeterministicRunEngine(
         run_id=run_id,
-        account_id=_ACCOUNT_ID,
-        strategy_id=_STRATEGY_ID,
+        account_id=account_id,
+        strategy_id=strategy_id,
         strategy=strategy,
         broker=DeterministicBroker(),
         risk_gate=ConfiguredAShareRiskGate(instruments=instruments, ledger=ledger),
@@ -741,7 +807,7 @@ def _replay(
                 {
                     "event_time": event_time,
                     "account_id": snapshot.account_id,
-                    "strategy_id": _STRATEGY_ID,
+                    "strategy_id": strategy_id,
                     "instrument_id": instrument_id,
                     "quantity_units": quantity.units,
                     "quantity_scale": quantity.scale,
@@ -786,7 +852,7 @@ def _replay(
         return_rows.append(
             {
                 "event_time": event_time,
-                "strategy_id": _STRATEGY_ID,
+                "strategy_id": strategy_id,
                 "gross_return": gross_return,
                 "net_return": net_return,
                 "nav_units": snapshot.nav.units,
@@ -877,7 +943,7 @@ def _replay(
             "event_time": fee.event_time,
             "cost_id": fee.fee_id,
             "account_id": fee.account_id,
-            "strategy_id": _STRATEGY_ID,
+            "strategy_id": strategy_id,
             "instrument_id": fills_by_id[fee.fill_id].instrument_id,
             "fill_id": fee.fill_id,
             "cost_type": fee.fee_type,
@@ -899,7 +965,7 @@ def _replay(
                     "reference_id": transaction.reference_id,
                     "posting_index": posting_index,
                     "ledger_account": posting.ledger_account,
-                    "account_id": _ACCOUNT_ID,
+                    "account_id": account_id,
                     "currency": posting.currency,
                     "amount_units": posting.amount.units,
                     "amount_scale": posting.amount.scale,
@@ -925,8 +991,8 @@ def _replay(
                 exposure_rows.append(
                     {
                         "event_time": event_time,
-                        "account_id": _ACCOUNT_ID,
-                        "strategy_id": _STRATEGY_ID,
+                        "account_id": account_id,
+                        "strategy_id": strategy_id,
                         "exposure_type": "factor",
                         "name": factor,
                         "value": float(value),
@@ -970,7 +1036,17 @@ def _replay(
             compounded = (1 + returns[column]).groupby(days, sort=True).prod() - 1
             daily[column] = compounded.to_numpy()
         frames["returns"] = daily.reset_index(drop=True)
-    return CertifiedReplay(result, events, instruments, mappings, ledger, frames)
+    return CertifiedReplay(
+        result,
+        events,
+        instruments,
+        mappings,
+        ledger,
+        frames,
+        account_id,
+        strategy_id,
+        strategy.risk_checks,
+    )
 
 
 def _write_certified_v2(
@@ -1031,7 +1107,7 @@ def _write_certified_v2(
         run_dir,
         project="a-share-multifactor",
         run_id=run_dir.name,
-        strategy_ids=[_STRATEGY_ID],
+        strategy_ids=[replay.strategy_id],
         profile="backtest-ledger",
         frames=replay.frames,
         metrics={

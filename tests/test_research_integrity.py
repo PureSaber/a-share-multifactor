@@ -123,6 +123,11 @@ def test_blocked_signal_days_and_risk_limits_stop_orders():
     assert blocked.frames["orders"].empty
     concentration = _replay(panel, config, "concentration", risk_limits={"max_single_weight": 0.01})
     assert concentration.frames["orders"].empty
+    assert concentration.risk_checks[-1]["has_critical"]
+    assert concentration.risk_checks[-1]["alerts"][0]["rule_id"] == ("portfolio.max_single_weight")
+    turnover = _replay(panel, config, "turnover", risk_limits={"max_turnover": 0.01})
+    assert turnover.frames["orders"].empty
+    assert turnover.risk_checks[-1]["alerts"][0]["rule_id"] == "portfolio.max_turnover"
     # Trigger a portfolio loss after the first next-bar fill and ensure the
     # drawdown gate emits no more rebalance intents after that observed loss.
     dates = sorted(panel.date.unique())
@@ -134,7 +139,30 @@ def test_blocked_signal_days_and_risk_limits_stop_orders():
     assert not (times.dt.normalize() >= dates[2]).any()
 
 
+def test_replay_uses_profile_specific_account_and_strategy_ids():
+    from test_certified_execution import _certified_panel
+
+    panel = _certified_panel()
+    replay = _replay(
+        panel,
+        AppConfig(rebalance_freq="daily"),
+        "isolated-account",
+        account_id="daily-research-v2-account",
+        strategy_id="daily-research-v2-strategy",
+    )
+    assert replay.account_id == "daily-research-v2-account"
+    assert replay.strategy_id == "daily-research-v2-strategy"
+    assert set(replay.frames["portfolio_snapshots"].account_id) == {"daily-research-v2-account"}
+    assert set(replay.frames["returns"].strategy_id) == {"daily-research-v2-strategy"}
+
+    with pytest.raises(ValueError, match="non-empty"):
+        _replay(panel, AppConfig(), "blank-account", account_id=" ")
+    with pytest.raises(ValueError, match="non-empty"):
+        _replay(panel, AppConfig(), "blank-strategy", strategy_id=" ")
+
+
 def test_strategy_without_account_and_insolvent_account_cannot_emit_orders():
+    from decimal import Decimal
     from types import SimpleNamespace
 
     from quant_data_kit import FixedPoint
@@ -149,6 +177,8 @@ def test_strategy_without_account_and_insolvent_account_cannot_emit_orders():
         trading_day=day, instrument_id="A", available_at=None, close_price=FixedPoint(10, 0)
     )
     assert strategy.on_event(None, event) == ()
+    assert not strategy._portfolio_check(target={"B": 1}, current={}, nav=Decimal(100), event=event)
+    assert strategy.risk_checks[-1]["alerts"][0]["rule_id"] == "portfolio.missing_mark"
     state = strategy.capture_state()
     strategy.reset()
     strategy.restore_state(state)

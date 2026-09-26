@@ -171,6 +171,38 @@ def validate_inputs(frames: dict, symbols: list[str], as_of: pd.Timestamp) -> di
     }
 
 
+def validate_trading_status(
+    rows: pd.DataFrame | None,
+    *,
+    symbols: list[str],
+    as_of: pd.Timestamp,
+    now: pd.Timestamp,
+    required: bool,
+    max_age_hours: float,
+) -> str | list[dict]:
+    """Admit only a complete, same-session, recently captured status snapshot."""
+
+    if max_age_hours <= 0:
+        raise ValueError("trading_status_max_age_hours must be positive")
+    if rows is None:
+        if required:
+            raise ValueError("A current ST/halt snapshot is required")
+        return "unverified"
+    if set(rows.symbol) != set(symbols) or rows.symbol.duplicated().any():
+        raise ValueError("Incomplete/duplicate trading-status snapshot")
+    captured = pd.to_datetime(rows.captured_at, utc=True)
+    now_utc = pd.Timestamp(now).tz_convert("UTC")
+    sessions = pd.to_datetime(rows.session).dt.normalize()
+    expected = pd.Timestamp(as_of).normalize()
+    if (captured > now_utc).any() or not sessions.eq(expected).all():
+        raise ValueError("Future or wrong-session trading-status snapshot")
+    if ((now_utc - captured) > pd.Timedelta(hours=max_age_hours)).any():
+        raise ValueError("Stale trading-status snapshot")
+    if not rows.status.eq("no_reported_restriction").all():
+        raise ValueError("Current ST/halt restriction or unknown tradability requires review")
+    return rows[["symbol", "status", "source", "captured_at"]].to_dict("records")
+
+
 def write_watchlist_catalog(root: Path, settings: dict, start: str, end: str) -> Path:
     rows = []
     for item in settings["watchlist"]:
@@ -329,6 +361,26 @@ def _run_decision(
         settings = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         if not isinstance(settings, dict) or not isinstance(settings.get("app"), dict):
             raise TypeError("Decision configuration requires an app mapping")
+        if not isinstance(settings.get("risk"), dict):
+            raise TypeError("Decision configuration requires a risk mapping")
+        watchlist = settings.get("watchlist")
+        if not isinstance(watchlist, list) or not watchlist:
+            raise TypeError("Decision configuration requires a non-empty watchlist")
+        symbols = [str(item["symbol"]) for item in watchlist]
+        if len(symbols) != len(set(symbols)):
+            raise ValueError("Decision watchlist contains duplicate symbols")
+        classifications = {
+            str(item["symbol"]): str(item["industry"]).strip()
+            for item in watchlist
+            if str(item.get("industry", "")).strip()
+        }
+        if settings["risk"].get("max_industry_weight") is not None and len(classifications) != len(
+            watchlist
+        ):
+            raise ValueError(
+                "Every watchlist item requires an industry when industry risk is enabled"
+            )
+        settings["risk"] = {**settings["risk"], "classifications": classifications}
         config = _dict_to_config(settings["app"])
         config = replace(
             config,
@@ -396,32 +448,20 @@ def _run_decision(
         card["evidence"]["inputs"] = str(source_root)
         card["evidence"]["input_manifest_sha256"] = sha256(source_root / "manifest.json")
         card["evidence"]["input_origin"] = manifest["origin"]
-        symbols = [item["symbol"] for item in settings["watchlist"]]
         quality = validate_inputs(frames, symbols, cutoff)
         card["data_quality"] = quality
         asof = pd.Timestamp(quality["as_of"])
         if asof == local.tz_localize(None).normalize() and local.hour < 16:
             raise ValueError("Today's daily bar is not admitted before 16:00 Asia/Shanghai")
         card["as_of"] = quality["as_of"]
-        status_rows = frames.get("status")
-        if status_rows is None:
-            quality["current_trading_status"] = "unverified"
-            if settings.get("trading_status") == "required":
-                raise ValueError("A current ST/halt snapshot is required")
-        else:
-            if set(status_rows.symbol) != set(symbols) or status_rows.symbol.duplicated().any():
-                raise ValueError("Incomplete/duplicate trading-status snapshot")
-            if (pd.to_datetime(status_rows.captured_at, utc=True) > now).any() or (
-                pd.to_datetime(status_rows.session) < asof
-            ).any():
-                raise ValueError("Future or stale trading-status snapshot")
-            quality["current_trading_status"] = status_rows[
-                ["symbol", "status", "source", "captured_at"]
-            ].to_dict("records")
-            if not status_rows.status.eq("no_reported_restriction").all():
-                raise ValueError(
-                    "Current ST/halt restriction or unknown tradability requires review"
-                )
+        quality["current_trading_status"] = validate_trading_status(
+            frames.get("status"),
+            symbols=symbols,
+            as_of=asof,
+            now=now,
+            required=settings.get("trading_status") == "required",
+            max_age_hours=float(settings.get("trading_status_max_age_hours", 24)),
+        )
         calendar = pd.DatetimeIndex(pd.to_datetime(frames["calendar"].date)).sort_values()
         next_session = calendar[calendar > asof].min()
         valid_until = next_session.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9, minutes=30)
@@ -541,6 +581,8 @@ def _run_decision(
             catalog_path=catalog,
             risk_limits=settings["risk"],
             corporate_actions=actions,
+            account_id=str(settings.get("account_id", "a-share-multifactor-account")),
+            strategy_id=str(settings.get("strategy_id", "a-share-multifactor-qexec")),
         )
         results = replay_results(replay, config)
         returns = results.quantile_returns.iloc[:, 0]
@@ -581,6 +623,7 @@ def _run_decision(
                 "ic_summary": json.loads(ic.to_json(orient="records")),
                 "ic_decay": json.loads(decay.to_json(orient="records")),
                 "research_validation": clean_json(card["validation"]),
+                "portfolio_risk_checks": clean_json(list(replay.risk_checks)),
             },
             internal_dependencies=identity["internal_dependencies"],
         )
@@ -602,9 +645,12 @@ def _run_decision(
         card["current_positions"] = current
         card["risk"] = {
             **settings["risk"],
+            "portfolio_checks": clean_json(list(replay.risk_checks)),
             "nav": nav,
             "currency": "CNY",
             "account_type": "virtual, no user brokerage holdings",
+            "account_id": replay.account_id,
+            "strategy_id": replay.strategy_id,
             "rebalance_frequency": settings["frequency"],
             "allocation": {
                 key: value
@@ -636,6 +682,16 @@ def _run_decision(
             reasons.append("simulation_drawdown_limit")
         if any(row["weight"] > settings["risk"]["max_single_weight"] for row in targets):
             reasons.append("target_concentration_limit")
+        critical_rules = sorted(
+            {
+                alert["rule_id"]
+                for check in replay.risk_checks
+                if check.get("has_critical")
+                for alert in check.get("alerts", [])
+            }
+        )
+        if critical_rules:
+            reasons.append("portfolio_risk_limit:" + ",".join(critical_rules))
         if manifest["origin"] != "live_public_api":
             reasons.append("non_live_input_snapshot")
         card["status"] = "observe" if reasons else "paper_ready"
