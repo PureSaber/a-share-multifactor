@@ -296,7 +296,7 @@ def _decimal(value: FixedPoint) -> Decimal:
 
 def load_fixture_catalog(path: Path = _CATALOG_PATH) -> pd.DataFrame:
     """Load the explicit, versioned fixture catalog; never infer by symbol pattern."""
-    catalog = pd.read_csv(path, dtype=str)
+    catalog = pd.read_csv(path, dtype=str, keep_default_na=False)
     required = {
         "symbol",
         "asset_class",
@@ -367,6 +367,7 @@ def build_instrument_master(
                 "lot_size": row["lot_size"],
                 "commission_rate": row["commission_rate"],
                 "stamp_duty_rate": row["stamp_duty_rate"],
+                "fee_fields_scope": row.get("fee_fields_scope", "catalog-declared"),
                 "catalog_scope": (
                     "fixture-certified-not-listing-history"
                     if catalog_path == _CATALOG_PATH
@@ -1024,6 +1025,7 @@ def _replay(
                     costs.stamp_tax if spec.asset_class is AssetClass.EQUITY else 0
                 ),
                 "min_commission": str(costs.min_commission),
+                "execution_fee_source": "configured-strategy-cost-assumption",
             },
         )
         for symbol, spec in instruments.items()
