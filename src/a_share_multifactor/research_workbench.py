@@ -89,6 +89,21 @@ class EquityResearchExecutor:
                 research = attach_history(research, history, fields)
         names = list(candidate["factors"])
         requirements = factor_requirements(names)
+        fundamental_columns = {
+            column
+            for requirement in requirements.values()
+            if requirement.get("pit_required")
+            for column in requirement["columns"]
+        }
+        missing_mappings = sorted(
+            column
+            for column in fundamental_columns
+            if recipe.get("required_history", {}).get(column) != "fundamentals"
+        )
+        if missing_mappings:
+            raise ValueError(
+                f"Fundamental factors require a publication-time mapping: {missing_mappings}"
+            )
         if strategy["family"] == "etf_trend":
             requirements["trend_filter"] = {
                 "columns": ["close"],
@@ -222,6 +237,7 @@ class EquityResearchExecutor:
                         if domain not in {"status", "universe"}:
                             continue
                         rows = asof_history(history, as_of=timestamp, domain=domain, field=field)
+                        rows = rows[rows.symbol.isin(symbols)]
                         if domain == "status" and rows.value.eq("false").any():
                             raise ValueError(
                                 "Restricted historical status requires an execution-status model"

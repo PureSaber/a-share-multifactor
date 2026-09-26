@@ -1,9 +1,11 @@
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
+from quant_data_kit.research_coverage import import_history
 from quant_lab import load_and_validate_standard_run
-from quant_lab.research import candidates
+from quant_lab.research import candidates, file_hash
 from test_decision_workflow import _inputs
 
 from a_share_multifactor import run_contract
@@ -101,3 +103,72 @@ def test_missing_history_and_input_corruption_block(recipe, tmp_path):
     (tmp_path / "inputs/raw.parquet").write_bytes(b"broken")
     with pytest.raises(ValueError, match="integrity"):
         execute(executor, recipe, candidates(recipe)[0], tmp_path / "corrupt")
+
+
+def freeze_history(recipe, tmp_path, *, domain, field, values):
+    source = tmp_path / "history.csv"
+    pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "domain": domain,
+                "field": field,
+                "effective_at": "2025-01-01T00:00:00Z",
+                "available_at": "2025-01-01T00:00:00Z",
+                "value": value,
+            }
+            for symbol, value in values.items()
+        ]
+    ).to_csv(source, index=False)
+    root = tmp_path / "history"
+    import_history(source, root, provider="test", source_uri="test://history", license_note="test")
+    recipe["inputs"]["history"] = str(root)
+
+
+def test_embedded_fundamentals_cannot_use_unrelated_history(recipe, tmp_path):
+    raw_path = Path(recipe["inputs"]["bundle"]) / "raw.parquet"
+    pd.read_parquet(raw_path).assign(pe_ratio=10.0).to_parquet(raw_path, index=False)
+    manifest_path = raw_path.parent / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"]["raw"]["sha256"] = file_hash(raw_path)
+    manifest_path.write_text(json.dumps(manifest))
+    freeze_history(
+        recipe, tmp_path, domain="classification", field="industry", values={"000001": "bank"}
+    )
+    recipe["factors"] = {"pe_inv": 1}
+    with pytest.raises(ValueError, match="publication-time mapping.*pe_ratio"):
+        execute(EquityResearchExecutor(), recipe, candidates(recipe)[0], tmp_path / "blocked-pit")
+
+
+def test_registered_fundamental_history_is_used(recipe, tmp_path):
+    recipe["factors"] = {"pe_inv": 1}
+    recipe["required_history"] = {"pe_ratio": "fundamentals"}
+    freeze_history(
+        recipe,
+        tmp_path,
+        domain="fundamentals",
+        field="pe_ratio",
+        values={"000001": 10, "000333": 20, "600036": 30, "601318": 40},
+    )
+    result = execute(EquityResearchExecutor(), recipe, candidates(recipe)[0], tmp_path / "pit")
+    assert result["metrics"]["fills"] > 0
+    assert result["factor_evidence"]["coverage"][0]["coverage"] == 1
+
+
+def test_restrictions_outside_observation_pool_do_not_block_replay(recipe, tmp_path):
+    recipe["required_history"] = {"tradable": "status"}
+    freeze_history(
+        recipe,
+        tmp_path,
+        domain="status",
+        field="tradable",
+        values={
+            "000001": "true",
+            "000333": "true",
+            "600036": "true",
+            "601318": "true",
+            "OTHER": "false",
+        },
+    )
+    result = execute(EquityResearchExecutor(), recipe, candidates(recipe)[0], tmp_path / "scoped")
+    assert result["metrics"]["fills"] > 0
