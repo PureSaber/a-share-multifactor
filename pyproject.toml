@@ -22,8 +22,8 @@ dependencies = [
     "quant-data-kit[akshare] @ git+https://github.com/PureSaber/quant-data-kit.git@4248bfdf4dcf525962e3c19f5f2c5b5fa5222534",
     "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@d12247ba5d3fa50ebb7179eee6df0f5af9802abd",
     "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@7f44d5a77ebbc6eb5e3714d4c28c109ec2ca0011",
-    "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@e65b074f3fe18f51858f857ecab1751da0ff56af",
-    "quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@7b2395e4427a435cdfe9e3d883b9ef028f99b974",
+    "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@9faf08af44849b4f44a38f024e05256da8600a8c",
+    "quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@618ac9fa703c32d94a4bc94d71de51920bc2a0df",
     "quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@ede86a080eab25054756bc95ef6d31353a99122b",
 ]
 
