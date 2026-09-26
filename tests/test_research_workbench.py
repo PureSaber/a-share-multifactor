@@ -288,8 +288,9 @@ def test_preflight_and_current_nav_allocation_retry_suspended_orders(recipe, tmp
     assert diagnostics["allocation_decisions"][0]["nav"] == recipe["costs"]["initial_capital"]
     assert any("MARKET_NOT_TRADABLE" in row["reason"] for row in diagnostics["unfilled_orders"])
     assert result["metrics"]["fills"] > 0
-    returns = pd.read_csv(tmp_path / "dynamic/returns.csv")
-    assert len(returns) == len(dates[(dates >= dates[45]) & (dates <= dates[79])])
+    returns = pd.read_csv(tmp_path / "dynamic/returns.csv", index_col=0)
+    expected_sessions = dates[(dates >= dates[45]) & (dates <= dates[79])]
+    assert list(pd.to_datetime(returns.index)) == list(expected_sessions)
 
 
 def test_suspended_ioc_orders_stop_after_bounded_session_retries(recipe, tmp_path):

@@ -532,6 +532,7 @@ def _prepare_research_inputs(
         "execution": execution,
         "status_panel": status_panel,
         "status_events": status_events,
+        "evaluation_sessions": sessions,
         "report": report,
     }
 
@@ -762,7 +763,11 @@ class EquityResearchExecutor:
             strategy_id="research-" + candidate["candidate_id"],
         )
         result = replay_results(replay, cfg)
-        returns = result.quantile_returns.iloc[:, 0]
+        evaluation_sessions = pd.DatetimeIndex(prepared["evaluation_sessions"])
+        returns = result.quantile_returns.iloc[:, 0].reindex(evaluation_sessions)
+        if returns.isna().any():
+            missing = [day.date().isoformat() for day in returns.index[returns.isna()]]
+            raise ValueError(f"Certified replay is missing evaluation sessions: {missing}")
         returns.to_csv(output / "returns.csv", header=["net_return"])
         statistics = return_statistics(returns.iloc[1:], 252)
         factors = factor_report(
