@@ -588,7 +588,88 @@ class EquityResearchExecutor:
         _, frames = self._inputs[cache_key]
         return cache_key, frames
 
-    def __call__(self, recipe: dict, candidate: dict, output: Path) -> dict:
+    def continuous(self, recipe, selections, output):
+        """Compile causal decision plans, then execute once without fold account resets.
+
+        Costs, risk policy, capital and allocation presence stay fixed. Selection
+        changes affect future scheduled decisions only; outstanding orders retain
+        their original terms. This is not a checkpoint/resume API.
+        """
+        from copy import deepcopy
+
+        if not selections:
+            raise ValueError("continuous replay requires frozen training selections")
+        _, frames = self._load(recipe)
+        sessions = pd.DatetimeIndex(pd.to_datetime(frames["calendar"].date))
+        sessions = sessions[
+            (sessions >= recipe["interval"]["start"]) & (sessions <= recipe["interval"]["end"])
+        ]
+        covered, plans, pieces = [], {}, []
+        target, allocation, risk = {}, {}, {}
+        first = selections[0]["candidate"]
+        for index, selection in enumerate(selections):
+            lo, hi = (
+                pd.Timestamp(selection["test"]["start"]),
+                pd.Timestamp(selection["test"]["end"]),
+            )
+            if pd.Timestamp(selection["train"]["end"]) >= lo or lo > hi:
+                raise ValueError("training must precede the continuous test interval")
+            active = sessions[(sessions >= lo) & (sessions <= hi)]
+            covered.extend(active.tolist())
+            candidate = selection["candidate"]
+            if candidate["cost_multiplier"] != first["cost_multiplier"]:
+                raise ValueError("continuous selection cannot change the account fee contract")
+            key = canonical(candidate)
+            if key not in plans:
+                path = output / f"plan-{index:03d}"
+                path.mkdir()
+                plans[key] = self(recipe, candidate, path, _plan_only=True)
+            plan = plans[key]
+            pieces.append(plan["scored"].loc[plan["scored"].date.isin(active)])
+            for destination, field in (
+                (target, "targets"),
+                (allocation, "allocation"),
+                (risk, "risk"),
+            ):
+                destination.update(
+                    {
+                        day: value
+                        for day, value in (plan[field] or {}).items()
+                        if lo.date() <= day <= hi.date()
+                    }
+                )
+        if covered != list(sessions):
+            raise ValueError(
+                "continuous selections must cover ordered nonoverlapping sessions exactly"
+            )
+        has_allocation = {plan["allocation"] is not None for plan in plans.values()}
+        if len(has_allocation) != 1:
+            raise ValueError("continuous replay cannot mix static and current-NAV allocation modes")
+        frozen = deepcopy(selections)
+        (output / "continuous_selections.json").write_text(canonical(frozen), encoding="utf-8")
+        payload = self(
+            recipe,
+            first,
+            output,
+            _continuous={
+                "scored": pd.concat(pieces, ignore_index=True),
+                "targets": target,
+                "allocation": allocation if True in has_allocation else None,
+                "risk": risk,
+                "starts": tuple(s["test"]["start"] for s in selections),
+            },
+        )
+        payload["continuous_selections"] = frozen
+        payload["account_policy"] = "single-continuous-oos-account"
+        payload["factor_evidence"] = {
+            "scope": "refer to frozen training-fold diagnostics",
+            "ic_decay": [],
+        }
+        return payload
+
+    def __call__(
+        self, recipe: dict, candidate: dict, output: Path, *, _plan_only=False, _continuous=None
+    ) -> dict:
         cache_key, frames = self._load(recipe)
         prepared = _prepare_research_inputs(recipe, candidate, frames=frames)
         check = prepared["report"]
@@ -797,6 +878,16 @@ class EquityResearchExecutor:
                             recipe.get("risk", {}),
                         )
                     )
+        if _plan_only:
+            return {
+                "scored": scored,
+                "targets": schedule,
+                "allocation": allocation_schedule,
+                "risk": risk_schedule,
+            }
+        if _continuous is not None:
+            scored, schedule = _continuous["scored"], _continuous["targets"]
+            allocation_schedule, risk_schedule = _continuous["allocation"], _continuous["risk"]
         actions = action_events(
             frames.get("actions"), raw, adjusted, pd.Timestamp(start), pd.Timestamp(end)
         )
@@ -813,6 +904,7 @@ class EquityResearchExecutor:
             risk_limits=recipe.get("risk", {}),
             risk_schedule=risk_schedule,
             strategy_id="research-" + candidate["candidate_id"],
+            segment_starts=_continuous["starts"] if _continuous is not None else (),
         )
         result = replay_results(replay, cfg)
         evaluation_sessions = pd.DatetimeIndex(prepared["evaluation_sessions"])
@@ -822,15 +914,19 @@ class EquityResearchExecutor:
             raise ValueError(f"Certified replay is missing evaluation sessions: {missing}")
         returns.to_csv(output / "returns.csv", header=["net_return"])
         statistics = return_statistics(returns.iloc[1:], 252)
-        factors = factor_report(
-            research,
-            names,
-            cutoff=str((pd.Timestamp(end) + pd.Timedelta(days=1)).date()),
-            start=start,
-            end=end,
-            expressions=expressions,
-            neutralize_by=tuple(recipe.get("neutralization", [])),
-            signal_delay=delay,
+        factors = (
+            {"scope": "refer to frozen training-fold diagnostics", "ic_decay": []}
+            if _continuous is not None
+            else factor_report(
+                research,
+                names,
+                cutoff=str((pd.Timestamp(end) + pd.Timedelta(days=1)).date()),
+                start=start,
+                end=end,
+                expressions=expressions,
+                neutralize_by=tuple(recipe.get("neutralization", [])),
+                signal_delay=delay,
+            )
         )
         (output / "factors.json").write_text(canonical(factors), encoding="utf-8")
         metrics = {
@@ -903,6 +999,18 @@ class EquityResearchExecutor:
             )
         return {
             "metrics": metrics,
+            "investment_evidence": {
+                "benchmark_id": recipe.get("objective", {}).get("benchmark_id"),
+                "net_return": metrics["total_return"],
+                "sharpe": metrics["sharpe"],
+                "drawdown_magnitude": abs(metrics["max_drawdown"])
+                if metrics["max_drawdown"] is not None
+                else None,
+                "capital": costs["initial_capital"],
+                "cost_rate": metrics["cost_total"] / costs["initial_capital"],
+                # Capacity, benchmark excess, stop and data-condition evidence
+                # must be measured separately; never infer them from a good P&L.
+            },
             "risk_summary": {
                 "model_kind": recipe.get("risk_model", {}).get("model_kind"),
                 "model_snapshots": sum(

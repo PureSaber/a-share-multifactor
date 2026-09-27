@@ -1002,6 +1002,7 @@ def _replay(
     execution_policy: dict | None = None,
     account_id: str = _ACCOUNT_ID,
     strategy_id: str = _STRATEGY_ID,
+    segment_starts: tuple = (),
 ) -> CertifiedReplay:
     if not account_id.strip() or not strategy_id.strip():
         raise ValueError("account_id and strategy_id must be non-empty")
@@ -1120,7 +1121,24 @@ def _replay(
         ),
         ledger=ledger,
     )
-    result = engine.replay(events, seed=0)
+    if segment_starts:
+        boundaries = tuple(pd.Timestamp(day).date() for day in segment_starts)
+        if tuple(sorted(set(boundaries))) != boundaries:
+            raise ValueError("continuous segment starts must be unique and ordered")
+        segments = [
+            tuple(
+                event
+                for event in events
+                if start <= event.trading_day
+                and (index + 1 == len(boundaries) or event.trading_day < boundaries[index + 1])
+            )
+            for index, start in enumerate(boundaries)
+        ]
+        if sum(map(len, segments)) != len(events):
+            raise ValueError("continuous boundaries do not cover every market event")
+        result = engine.replay_segments(segments, seed=0)
+    else:
+        result = engine.replay(events, seed=0)
     artifacts = engine.artifacts
     if artifacts is None:
         raise RuntimeError("QExec replay did not produce artifacts")
