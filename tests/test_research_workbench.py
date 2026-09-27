@@ -432,7 +432,10 @@ def test_execution_schema_and_missing_status_fail_closed(recipe, tmp_path):
     recipe["execution"] = {"mode": "fixed", "status_fields": fields}
     report = preflight_recipe(recipe)
     assert not report["passed"]
-    assert "missing" in report["issues"][0]["detail"]
+    assert any(
+        isinstance(issue["detail"], dict) and issue["detail"].get("missing_symbol_sessions", 0) > 0
+        for issue in report["issues"]
+    )
 
 
 def test_preflight_rejects_late_master_but_allows_never_listed_symbol(recipe, tmp_path):

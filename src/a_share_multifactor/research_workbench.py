@@ -89,20 +89,33 @@ def validate_research_execution(value: Mapping[str, object]) -> dict[str, object
     }
 
 
-def _as_bool(rows: pd.DataFrame, symbols: list[str], *, field: str, cutoff: pd.Timestamp) -> dict:
+def _as_bool(
+    rows: pd.DataFrame,
+    symbols: list[str],
+    *,
+    field: str,
+    cutoff: pd.Timestamp,
+    allow_unknown: bool = False,
+) -> dict:
     indexed = rows.set_index("symbol")
     missing = sorted(set(symbols) - set(indexed.index))
-    if missing:
+    if missing and not allow_unknown:
         raise ValueError(
             f"Historical field {field!r} is missing at {cutoff.isoformat()}: {missing}"
         )
-    values = indexed.loc[symbols, "value"].astype(str)
-    invalid = sorted(values[~values.isin(["true", "false"])].index.astype(str))
+    values = indexed.reindex(symbols)["value"]
+    allowed = ["true", "false", "unknown"] if allow_unknown else ["true", "false"]
+    invalid = sorted(
+        values[~values.isin(allowed) & ~(values.isna() & allow_unknown)].index.astype(str)
+    )
     if invalid:
         raise ValueError(
             f"Historical field {field!r} is not boolean at {cutoff.isoformat()}: {invalid}"
         )
-    return {symbol: indexed.loc[symbol, "value"] == "true" for symbol in symbols}
+    return {
+        symbol: (None if pd.isna(value) or value == "unknown" else value == "true")
+        for symbol, value in values.items()
+    }
 
 
 def _execution_history(
@@ -123,8 +136,12 @@ def _execution_history(
         for semantic, field in status_fields.items():
             at_open = asof_history(history, as_of=market_open, domain="status", field=field)
             at_close = asof_history(history, as_of=decision_close, domain="status", field=field)
-            open_values = _as_bool(at_open, symbols, field=field, cutoff=market_open)
-            close_values = _as_bool(at_close, symbols, field=field, cutoff=decision_close)
+            open_values = _as_bool(
+                at_open, symbols, field=field, cutoff=market_open, allow_unknown=True
+            )
+            close_values = _as_bool(
+                at_close, symbols, field=field, cutoff=decision_close, allow_unknown=True
+            )
             changed = sorted(
                 symbol for symbol in symbols if open_values[symbol] != close_values[symbol]
             )
@@ -203,8 +220,8 @@ def _dynamic_market_issues(
     for symbol, states in interval.groupby("symbol", sort=True):
         # Listed names keep requiring prices after a universe exit because an
         # existing holding may still need an evidenced sale.
-        expected = states[states.listed & states.status.ne("suspended")]
-        forbidden = states[~states.listed]
+        expected = states[states.listed.eq(True) & states.status.ne("suspended")]
+        forbidden = states[states.listed.eq(False)]
         missing_sessions = [
             day.date().isoformat()
             for day in expected.date
@@ -274,7 +291,7 @@ def _instrument_master_issues(
             relevant = sessions
         else:
             states = status[status.symbol.astype(str).eq(symbol)]
-            mask = states.listed.astype(bool)
+            mask = states.listed.eq(True)
             relevant = pd.DatetimeIndex(states.loc[mask, "date"])
         available_at = pd.Timestamp(row.available_at)
         available_at = (
@@ -648,7 +665,7 @@ class EquityResearchExecutor:
                 on=["symbol", "date"],
                 validate="one_to_one",
             )
-            scored["eligible"] &= scored["listed"].astype(bool)
+            scored["eligible"] &= scored["listed"].eq(True)
             if execution["mode"] == "dynamic":
                 scored["eligible"] &= scored["in_universe"].astype(bool)
         if scored.empty or (
