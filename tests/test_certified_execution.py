@@ -77,6 +77,40 @@ def test_instrument_master_uses_stock_and_etf_contracts() -> None:
     assert all(mapping.source == "fixture-certified" for mapping in mappings)
 
 
+def test_unknown_master_fees_remain_unknown_and_replay_uses_explicit_costs(tmp_path):
+    catalog = load_fixture_catalog()
+    catalog["commission_rate"] = ""
+    catalog["stamp_duty_rate"] = ""
+    catalog["fee_fields_scope"] = "unavailable-requires-consumer-strategy-cost-model"
+    path = tmp_path / "catalog.csv"
+    catalog.to_csv(path, index=False)
+    panel = _certified_panel().loc[lambda frame: frame.symbol.eq("510300")].head(4)
+    specs, _ = build_instrument_master(panel, catalog_path=path)
+    assert specs["510300"].metadata["commission_rate"] == ""
+    assert specs["510300"].metadata["stamp_duty_rate"] == ""
+    assert specs["510300"].metadata["fee_fields_scope"].startswith("unavailable")
+    config = AppConfig()
+    config.costs.commission = 0.001
+    config.costs.min_commission = 7
+    dates = panel.date.dt.date.tolist()
+    replay = _replay(
+        panel,
+        config,
+        "unknown-fees",
+        catalog_path=path,
+        target_schedule={dates[0]: {"510300": 100}, dates[2]: {}},
+    )
+    assert replay.frames["fills"].side.tolist() == ["buy", "sell"]
+    assert [
+        Decimal(row.amount_units).scaleb(-row.amount_scale)
+        for row in replay.frames["costs"].itertuples()
+    ] == [Decimal(7), Decimal(7)]
+    metadata = replay.instruments["510300"].metadata
+    assert metadata["commission_rate"] == "0.001"
+    assert metadata["stamp_duty_rate"] == "0"
+    assert metadata["execution_fee_source"] == "configured-strategy-cost-assumption"
+
+
 def test_scored_panel_hash_is_canonical_and_value_sensitive() -> None:
     panel = _certified_panel()
     reordered = panel.sample(frac=1, random_state=7)[reversed(panel.columns)].reset_index(drop=True)

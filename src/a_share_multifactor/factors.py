@@ -10,8 +10,8 @@ from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 
 import pandas as pd
+from quant_factors.core import DEFAULT_FACTORS, list_factors
 from quant_factors.core import compute_factors as qf_compute
-from quant_factors.core import list_factors
 
 try:
     QUANT_FACTORS_VERSION = version("quant-factors")
@@ -60,7 +60,7 @@ def compute_factors(price_df: pd.DataFrame, factor_names: list[str] | None = Non
     Uses quant-factors for shared OHLCV factors; keeps local registry for
     northbound and passthrough columns.
     """
-    names = factor_names or list(SHARED_QF_FACTORS) + list(FACTOR_REGISTRY) + list(
+    names = factor_names or list(DEFAULT_FACTORS) + list(FACTOR_REGISTRY) + list(
         PASSTHROUGH_FACTORS
     )
     unknown = set(names) - set(SHARED_QF_FACTORS) - set(FACTOR_REGISTRY) - PASSTHROUGH_FACTORS

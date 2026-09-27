@@ -24,6 +24,13 @@ def _panel(n_days: int = 90, n_symbols: int = 3) -> pd.DataFrame:
                     "low": close[d] * 0.99,
                     "close": close[d],
                     "volume": 1_000_000 + 1000 * d,
+                    "volume_unit": "shares",
+                    "share_basis": "raw",
+                    "free_float_shares": 100_000_000,
+                    "amount": (1_000_000 + 1000 * d) * close[d],
+                    "amount_unit": "currency",
+                    "currency": "CNY",
+                    "return_close": close[d],
                     "pe_ratio": 10.0 + i,
                     "pb_ratio": 1.5 + i / 10,
                 }

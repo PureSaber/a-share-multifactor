@@ -215,6 +215,182 @@ def test_drawdown_halt_survives_recovery_and_checkpoint_restore():
     assert strategy.capture_state()["risk_halted"]
 
 
+def test_drawdown_liquidates_through_exact_ledger_and_never_reenters():
+    from test_certified_execution import _certified_panel
+
+    panel = _certified_panel()
+    dates = sorted(panel.date.unique())
+    for column in ["open", "high", "low", "close"]:
+        panel.loc[panel.date >= dates[2], column] *= 0.5
+    replay = _replay(
+        panel,
+        AppConfig(rebalance_freq="daily"),
+        "kill-switch",
+        risk_limits={"max_drawdown": 0.05, "drawdown_action": "liquidate"},
+    )
+    orders = replay.frames["orders"]
+    after_loss = pd.to_datetime(orders.event_time, utc=True).dt.tz_localize(None) >= dates[2]
+    exits = orders.loc[after_loss]
+    assert not exits.empty
+    assert exits.side.eq("sell").all() and exits.reduce_only.all()
+    assert replay.frames["fills"].side.eq("sell").any()
+    assert all(
+        q.units == 0
+        for q in replay.ledger.snapshot(replay.events[-1].available_at).positions.values()
+    )
+    assert any(row.get("drawdown_action") == "liquidate" for row in replay.risk_checks)
+
+
+def test_halt_cancels_accepted_orders_and_releases_authoritative_reservations():
+    from types import SimpleNamespace
+
+    from quant_data_kit import FixedPoint
+    from quant_execution import DeterministicBroker, OrderIntent, OrderType, Side, TimeInForce
+
+    from a_share_multifactor.run_contract import _TargetWeightStrategy
+
+    stamp = pd.Timestamp("2025-01-02T07:00:00Z").to_pydatetime()
+    broker = DeterministicBroker()
+    order = broker.submit(
+        OrderIntent(
+            idempotency_key="pending",
+            account_id="a",
+            strategy_id="s",
+            instrument_id="A",
+            side=Side.BUY,
+            quantity=FixedPoint(100, 0),
+            order_type=OrderType.MARKET,
+            time_in_force=TimeInForce.GTC,
+            created_at=stamp,
+        )
+    )
+    released = []
+    account = SimpleNamespace(nav=FixedPoint(80, 0), positions={})
+    strategy = _TargetWeightStrategy(
+        {},
+        ledger=SimpleNamespace(snapshot=lambda _: account),
+        broker=broker,
+        risk_gate=SimpleNamespace(release_order=released.append),
+        initial_capital=100,
+        risk_limits={"max_drawdown": 0.1},
+        trigger_symbols={stamp.date(): "A"},
+        blocked_dates={stamp.date()},
+    )
+    event = SimpleNamespace(
+        trading_day=stamp.date(),
+        instrument_id="A",
+        available_at=stamp,
+        close_price=FixedPoint(10, 0),
+    )
+    assert strategy.on_event(SimpleNamespace(strategy_id="s", account_id="a"), event) == ()
+    assert not broker.open_orders
+    assert [o.order_id for o in released] == [order.order_id]
+    assert strategy.capture_state()["risk_halted"]
+
+
+@pytest.mark.parametrize(
+    "drawdown_action,exposure_action", [("liquidate", "halt"), ("halt", "liquidate")]
+)
+def test_simultaneous_exposure_and_drawdown_keep_stronger_exit_action(
+    drawdown_action, exposure_action
+):
+    from types import SimpleNamespace
+
+    from quant_data_kit import FixedPoint
+
+    from a_share_multifactor.run_contract import _TargetWeightStrategy
+
+    stamp = pd.Timestamp("2025-01-02T07:00:00Z").to_pydatetime()
+    ledger = SimpleNamespace(
+        snapshot=lambda _: SimpleNamespace(nav=FixedPoint(80, 0), positions={"A": FixedPoint(7, 0)})
+    )
+    strategy = _TargetWeightStrategy(
+        {},
+        ledger=ledger,
+        initial_capital=100,
+        trigger_symbols={stamp.date(): "A"},
+        risk_limits={
+            "max_drawdown": 0.1,
+            "min_cash_weight": 0.2,
+            "drawdown_action": drawdown_action,
+            "exposure_breach_action": exposure_action,
+        },
+    )
+    event = SimpleNamespace(
+        trading_day=stamp.date(),
+        instrument_id="A",
+        available_at=stamp,
+        close_price=FixedPoint(10, 0),
+    )
+    intents = strategy.on_event(SimpleNamespace(strategy_id="s", account_id="a"), event)
+    assert len(intents) == 1 and intents[0].reduce_only
+    assert strategy.capture_state()["risk_halted"]
+
+
+def test_cash_drift_without_risk_model_latches_account():
+    from types import SimpleNamespace
+
+    from quant_data_kit import FixedPoint
+
+    from a_share_multifactor.run_contract import _TargetWeightStrategy
+
+    stamp = pd.Timestamp("2025-01-02T07:00:00Z").to_pydatetime()
+    account = SimpleNamespace(nav=FixedPoint(110, 0), positions={"A": FixedPoint(9, 0)})
+    strategy = _TargetWeightStrategy(
+        {},
+        ledger=SimpleNamespace(snapshot=lambda _: account),
+        initial_capital=100,
+        trigger_symbols={stamp.date(): "A"},
+        risk_limits={"min_cash_weight": 0.2},
+    )
+    event = SimpleNamespace(
+        trading_day=stamp.date(),
+        instrument_id="A",
+        available_at=stamp,
+        close_price=FixedPoint(10, 0),
+    )
+    assert strategy.on_event(SimpleNamespace(strategy_id="s", account_id="a"), event) == ()
+    assert strategy.capture_state()["risk_halt_reason"] == "exposure_breach"
+
+
+def test_later_exposure_breach_escalates_existing_drawdown_halt_to_liquidation():
+    from types import SimpleNamespace
+
+    from quant_data_kit import FixedPoint
+
+    from a_share_multifactor.run_contract import _TargetWeightStrategy
+
+    dates = pd.bdate_range("2025-01-02", periods=2, tz="UTC") + pd.Timedelta(hours=7)
+    account = SimpleNamespace(nav=FixedPoint(80, 0), positions={"A": FixedPoint(5, 0)})
+    strategy = _TargetWeightStrategy(
+        {},
+        ledger=SimpleNamespace(snapshot=lambda _: account),
+        initial_capital=100,
+        trigger_symbols={day.date(): "A" for day in dates},
+        risk_limits={
+            "max_drawdown": 0.1,
+            "min_cash_weight": 0.2,
+            "drawdown_action": "halt",
+            "exposure_breach_action": "liquidate",
+        },
+    )
+    context = SimpleNamespace(strategy_id="s", account_id="a")
+
+    def event(day):
+        return SimpleNamespace(
+            trading_day=day.date(),
+            instrument_id="A",
+            available_at=day,
+            close_price=FixedPoint(10, 0),
+        )
+
+    assert strategy.on_event(context, event(dates[0])) == ()
+    account.positions = {"A": FixedPoint(7, 0)}
+    exits = strategy.on_event(context, event(dates[1]))
+    assert len(exits) == 1 and exits[0].reduce_only
+    assert strategy.capture_state()["risk_halt_reason"] == "exposure_breach"
+
+
 def test_empty_account_results_do_not_manufacture_performance():
     from types import SimpleNamespace
 

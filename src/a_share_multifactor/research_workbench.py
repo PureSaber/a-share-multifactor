@@ -89,20 +89,33 @@ def validate_research_execution(value: Mapping[str, object]) -> dict[str, object
     }
 
 
-def _as_bool(rows: pd.DataFrame, symbols: list[str], *, field: str, cutoff: pd.Timestamp) -> dict:
+def _as_bool(
+    rows: pd.DataFrame,
+    symbols: list[str],
+    *,
+    field: str,
+    cutoff: pd.Timestamp,
+    allow_unknown: bool = False,
+) -> dict:
     indexed = rows.set_index("symbol")
     missing = sorted(set(symbols) - set(indexed.index))
-    if missing:
+    if missing and not allow_unknown:
         raise ValueError(
             f"Historical field {field!r} is missing at {cutoff.isoformat()}: {missing}"
         )
-    values = indexed.loc[symbols, "value"].astype(str)
-    invalid = sorted(values[~values.isin(["true", "false"])].index.astype(str))
+    values = indexed.reindex(symbols)["value"]
+    allowed = ["true", "false", "unknown"] if allow_unknown else ["true", "false"]
+    invalid = sorted(
+        values[~values.isin(allowed) & ~(values.isna() & allow_unknown)].index.astype(str)
+    )
     if invalid:
         raise ValueError(
             f"Historical field {field!r} is not boolean at {cutoff.isoformat()}: {invalid}"
         )
-    return {symbol: indexed.loc[symbol, "value"] == "true" for symbol in symbols}
+    return {
+        symbol: (None if pd.isna(value) or value == "unknown" else value == "true")
+        for symbol, value in values.items()
+    }
 
 
 def _execution_history(
@@ -123,8 +136,12 @@ def _execution_history(
         for semantic, field in status_fields.items():
             at_open = asof_history(history, as_of=market_open, domain="status", field=field)
             at_close = asof_history(history, as_of=decision_close, domain="status", field=field)
-            open_values = _as_bool(at_open, symbols, field=field, cutoff=market_open)
-            close_values = _as_bool(at_close, symbols, field=field, cutoff=decision_close)
+            open_values = _as_bool(
+                at_open, symbols, field=field, cutoff=market_open, allow_unknown=True
+            )
+            close_values = _as_bool(
+                at_close, symbols, field=field, cutoff=decision_close, allow_unknown=True
+            )
             changed = sorted(
                 symbol for symbol in symbols if open_values[symbol] != close_values[symbol]
             )
@@ -203,8 +220,8 @@ def _dynamic_market_issues(
     for symbol, states in interval.groupby("symbol", sort=True):
         # Listed names keep requiring prices after a universe exit because an
         # existing holding may still need an evidenced sale.
-        expected = states[states.listed & states.status.ne("suspended")]
-        forbidden = states[~states.listed]
+        expected = states[states.listed.eq(True) & states.status.ne("suspended")]
+        forbidden = states[states.listed.eq(False)]
         missing_sessions = [
             day.date().isoformat()
             for day in expected.date
@@ -274,7 +291,7 @@ def _instrument_master_issues(
             relevant = sessions
         else:
             states = status[status.symbol.astype(str).eq(symbol)]
-            mask = states.listed.astype(bool)
+            mask = states.listed.eq(True)
             relevant = pd.DatetimeIndex(states.loc[mask, "date"])
         available_at = pd.Timestamp(row.available_at)
         available_at = (
@@ -609,6 +626,13 @@ class EquityResearchExecutor:
                 expressions,
             )
         features = self._features[features_key].copy()
+        from a_share_multifactor.research_risk import (
+            allocation_risk_inputs,
+            build_risk_schedule,
+            neutralize_signals,
+        )
+
+        features = neutralize_signals(features, names, recipe.get("neutralization", []))
         valid_features = features[names].apply(pd.to_numeric, errors="coerce")
         finite = np.isfinite(valid_features).all(axis=1)
         ranks = pd.concat(
@@ -641,7 +665,7 @@ class EquityResearchExecutor:
                 on=["symbol", "date"],
                 validate="one_to_one",
             )
-            scored["eligible"] &= scored["listed"].astype(bool)
+            scored["eligible"] &= scored["listed"].eq(True)
             if execution["mode"] == "dynamic":
                 scored["eligible"] &= scored["in_universe"].astype(bool)
         if scored.empty or (
@@ -690,6 +714,26 @@ class EquityResearchExecutor:
                 ),
             )
         allocation_schedule = None
+        risk_schedule = build_risk_schedule(
+            research,
+            recipe,
+            prepared["evaluation_sessions"],
+            raw_prices=raw,
+            actions=frames.get("actions"),
+        )
+        if risk_schedule:
+            (output / "risk_models.json").write_text(
+                canonical(
+                    {
+                        day.isoformat(): {
+                            "classifications": item["classifications"],
+                            "model": item["model"].to_dict() if item["model"] else None,
+                        }
+                        for day, item in risk_schedule.items()
+                    }
+                ),
+                encoding="utf-8",
+            )
         if allocation is None and strategy["family"] == "buy_hold":
             first = scored[scored.date == scored.date.min()].assign(composite_score=1.0)
             schedule = _target_schedule(first, cfg, catalog_path=catalog)
@@ -745,6 +789,14 @@ class EquityResearchExecutor:
                         dtype=float,
                     ),
                 }
+                if risk_schedule:
+                    allocation_schedule[day.date()].update(
+                        allocation_risk_inputs(
+                            risk_schedule[day.date()],
+                            selected.symbol.tolist(),
+                            recipe.get("risk", {}),
+                        )
+                    )
         actions = action_events(
             frames.get("actions"), raw, adjusted, pd.Timestamp(start), pd.Timestamp(end)
         )
@@ -759,6 +811,7 @@ class EquityResearchExecutor:
             status_events=prepared["status_events"],
             execution_policy=execution,
             risk_limits=recipe.get("risk", {}),
+            risk_schedule=risk_schedule,
             strategy_id="research-" + candidate["candidate_id"],
         )
         result = replay_results(replay, cfg)
@@ -776,6 +829,8 @@ class EquityResearchExecutor:
             start=start,
             end=end,
             expressions=expressions,
+            neutralize_by=tuple(recipe.get("neutralization", [])),
+            signal_delay=delay,
         )
         (output / "factors.json").write_text(canonical(factors), encoding="utf-8")
         metrics = {
@@ -799,6 +854,8 @@ class EquityResearchExecutor:
         execution_diagnostics = {
             "schema_version": "asm.research-execution-diagnostics/v1",
             "allocation_decisions": list(replay.allocation_decisions),
+            "risk_checks": list(replay.risk_checks),
+            "runtime_risk_events": list(replay.runtime_risk_events),
             "retry_diagnostics": list(replay.retry_diagnostics),
             "unfilled_orders": [
                 {
@@ -846,6 +903,27 @@ class EquityResearchExecutor:
             )
         return {
             "metrics": metrics,
+            "risk_summary": {
+                "model_kind": recipe.get("risk_model", {}).get("model_kind"),
+                "model_snapshots": sum(
+                    item["model"] is not None for item in risk_schedule.values()
+                ),
+                "target_rejections": sum(
+                    row.get("stage") == "target" and row["has_critical"]
+                    for row in replay.risk_checks
+                ),
+                "realized_breaches": sum(
+                    row.get("stage") == "realized" and row["has_critical"]
+                    for row in replay.risk_checks
+                ),
+                "drawdown_halted_sessions": sum(
+                    "drawdown_action" in row for row in replay.risk_checks
+                ),
+                "exposure_halted_sessions": sum(
+                    "exposure_breach_action" in row for row in replay.risk_checks
+                ),
+                "runtime_risk_events": len(replay.runtime_risk_events),
+            },
             "segments": segments,
             "factor_evidence": factors,
             "comparison": {
@@ -858,6 +936,8 @@ class EquityResearchExecutor:
                 "invested_limit": invested,
                 "allocation": allocation,
                 "execution": execution,
+                "risk_model": recipe.get("risk_model"),
+                "neutralization": recipe.get("neutralization", []),
             },
             "scope": "synthetic-software-demonstration"
             if raw.source.astype(str).str.contains("synthetic").any()
