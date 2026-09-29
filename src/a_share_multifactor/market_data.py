@@ -43,7 +43,7 @@ def main():
             sleep_seconds=0.2,
         )
     elif args.kind == "benchmark":
-        from quant_data_kit.providers.benchmark import fetch_hs300_benchmark
+        from a_share_multifactor.data_loader import fetch_hs300_benchmark
 
         frame = fetch_hs300_benchmark(args.start, args.end)
     else:

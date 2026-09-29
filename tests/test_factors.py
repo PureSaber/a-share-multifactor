@@ -46,11 +46,16 @@ def test_apply_factor_directions() -> None:
 def test_add_period_return() -> None:
     df = pd.DataFrame(
         {
-            "symbol": ["A", "A", "A"],
-            "date": pd.to_datetime(["2020-01-31", "2020-02-29", "2020-03-31"]),
-            "close": [100.0, 110.0, 121.0],
+            "symbol": ["A", "A", "A", "A"],
+            "date": pd.to_datetime(["2020-01-31", "2020-02-03", "2020-02-28", "2020-03-02"]),
+            "open": [100.0, 110.0, 115.0, 121.0],
+            "high": [101.0, 112.0, 116.0, 122.0],
+            "low": [99.0, 108.0, 114.0, 120.0],
+            "close": [100.0, 111.0, 115.0, 121.5],
+            "volume": [1000, 1000, 1000, 1000],
         }
     )
     rebalance_idx = rebalance_dates(df["date"], "monthly")
     result = add_period_return(df, rebalance_idx)
-    assert abs(result.loc[0, "period_return"] - 0.1) < 1e-9
+    january = result.loc[result["date"] == pd.Timestamp("2020-01-31"), "period_return"].iloc[0]
+    assert abs(january - (121.0 / 110.0 - 1)) < 1e-9

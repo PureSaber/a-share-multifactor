@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import sqrt
 from pathlib import Path
 
 import pandas as pd
@@ -41,7 +42,7 @@ def calc_ic_series(
     return pd.Series(ic_values, index=dates, name=f"ic_{suffix}{factor_col}")
 
 
-def summarize_ic(ic_series: pd.Series) -> dict[str, float]:
+def summarize_ic(ic_series: pd.Series) -> dict[str, float | int]:
     """Summarize IC series into mean, std, IR, and positive ratio."""
     clean = ic_series.dropna()
     if clean.empty:
@@ -50,16 +51,27 @@ def summarize_ic(ic_series: pd.Series) -> dict[str, float]:
             "std_ic": float("nan"),
             "ir": float("nan"),
             "ic_positive_ratio": float("nan"),
+            "ic_tstat": float("nan"),
+            "n_obs": 0,
         }
 
     mean_ic = float(clean.mean())
     std_ic = float(clean.std(ddof=0))
     ir = mean_ic / std_ic if std_ic not in (0.0, float("nan")) else float("nan")
+    n_obs = len(clean)
+    sample_std = float(clean.std(ddof=1)) if n_obs > 1 else float("nan")
+    ic_tstat = (
+        mean_ic / (sample_std / sqrt(n_obs))
+        if n_obs > 1 and sample_std > 0
+        else float("nan")
+    )
     return {
         "mean_ic": mean_ic,
         "std_ic": std_ic,
         "ir": ir,
         "ic_positive_ratio": float((clean > 0).mean()),
+        "ic_tstat": ic_tstat,
+        "n_obs": n_obs,
     }
 
 
@@ -83,6 +95,8 @@ def analyze_factors(
                 "std_ic": summary["std_ic"],
                 "ir": summary["ir"],
                 "ic_positive_ratio": summary["ic_positive_ratio"],
+                "ic_tstat": summary["ic_tstat"],
+                "n_obs": summary["n_obs"],
                 "mean_rank_ic": rank_summary["mean_ic"],
                 "ir_rank": rank_summary["ir"],
             }
@@ -102,6 +116,25 @@ def export_ic_series(
     for factor_col in factor_cols:
         ic_series = calc_ic_series(panel, factor_col, return_col, date_col=date_col)
         ic_series.to_csv(output_dir / f"ic_series_{factor_col}.csv", header=["ic"])
+
+
+def ic_by_year(
+    panel: pd.DataFrame,
+    factor_cols: list[str],
+    return_col: str,
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Mean IC and t-stat inside each calendar year."""
+    rows: list[dict[str, float | str | int]] = []
+    for factor_col in factor_cols:
+        ic_series = calc_ic_series(panel, factor_col, return_col, date_col=date_col)
+        if ic_series.empty:
+            continue
+        years = pd.to_datetime(pd.Index(ic_series.index)).year
+        for year, values in ic_series.groupby(years):
+            summary = summarize_ic(values)
+            rows.append({"factor": factor_col, "year": int(year), **summary})
+    return pd.DataFrame(rows)
 
 
 def analyze_ic_decay(

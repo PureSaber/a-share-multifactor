@@ -48,6 +48,7 @@ def test_run_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
                     "low": 9.5 + i * 0.1,
                     "close": 10 + i * 0.1,
                     "volume": 1000,
+                    "name": "平安银行",
                     "market_cap": 1e10,
                     "pe_ratio": 10.0,
                     "pb_ratio": 2.0,
@@ -60,6 +61,8 @@ def test_run_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         {
             "date": dates,
             "benchmark_return": [0.001] * len(dates),
+            "benchmark_kind": ["total_return"] * len(dates),
+            "benchmark_symbol": ["H00300"] * len(dates),
         }
     )
     save_parquet(prices, tmp_path / "prices.parquet")
