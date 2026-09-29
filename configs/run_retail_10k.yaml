@@ -48,6 +48,7 @@ costs:
   retail_mode: true
   min_commission: 5.0
   stamp_tax: 0.0005
+  statutory_stamp_tax: true
   lot_size: 100
   initial_capital: 10000
   max_holdings: 10

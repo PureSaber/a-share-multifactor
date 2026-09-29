@@ -15,7 +15,12 @@ import yaml
 
 from a_share_multifactor.config import AppConfig, load_config
 from a_share_multifactor.data_loader import build_dataset, load_benchmark_returns
-from a_share_multifactor.ic_analysis import analyze_factors, analyze_ic_decay, export_ic_series
+from a_share_multifactor.ic_analysis import (
+    analyze_factors,
+    analyze_ic_decay,
+    export_ic_series,
+    ic_by_year,
+)
 from a_share_multifactor.preprocess import prepare_factor_panel
 from a_share_multifactor.quantile_backtest import BacktestResult, run_quantile_backtest
 from a_share_multifactor.report import write_html_report
@@ -171,6 +176,8 @@ def run_pipeline(
     export_ic_series(panel, factor_cols, config.forward_return_col, latest_dir / "ic_series")
     ic_decay = analyze_ic_decay(panel, factor_cols, config.ic_decay_horizons, price_col="close")
     ic_decay.to_csv(latest_dir / "ic_decay.csv", index=False)
+    yearly_ic = ic_by_year(panel, factor_cols, config.forward_return_col)
+    yearly_ic.to_csv(latest_dir / "ic_by_year.csv", index=False)
 
     run_dir = write_outputs(
         results,
@@ -180,6 +187,7 @@ def run_pipeline(
         run_metadata=run_metadata,
     )
     ic_decay.to_csv(run_dir / "ic_decay.csv", index=False)
+    yearly_ic.to_csv(run_dir / "ic_by_year.csv", index=False)
     write_equity_standard_run(
         run_dir,
         results,
@@ -189,6 +197,7 @@ def run_pipeline(
     )
     export_ic_series(panel, factor_cols, config.forward_return_col, run_dir / "ic_series")
     ic_decay.to_csv(run_dir / "ic_decay.csv", index=False)
+    yearly_ic.to_csv(run_dir / "ic_by_year.csv", index=False)
     return results, ic_report, run_dir
 
 
@@ -243,6 +252,8 @@ def main() -> None:
     export_ic_series(panel, factor_cols, config.forward_return_col, latest_dir / "ic_series")
     ic_decay = analyze_ic_decay(panel, factor_cols, config.ic_decay_horizons, price_col="close")
     ic_decay.to_csv(latest_dir / "ic_decay.csv", index=False)
+    yearly_ic = ic_by_year(panel, factor_cols, config.forward_return_col)
+    yearly_ic.to_csv(latest_dir / "ic_by_year.csv", index=False)
 
     run_dir = write_outputs(
         results,
@@ -254,6 +265,7 @@ def main() -> None:
         run_metadata=run_metadata,
     )
     ic_decay.to_csv(run_dir / "ic_decay.csv", index=False)
+    yearly_ic.to_csv(run_dir / "ic_by_year.csv", index=False)
     write_equity_standard_run(
         run_dir,
         results,
@@ -263,6 +275,7 @@ def main() -> None:
     )
     export_ic_series(panel, factor_cols, config.forward_return_col, run_dir / "ic_series")
     ic_decay.to_csv(run_dir / "ic_decay.csv", index=False)
+    yearly_ic.to_csv(run_dir / "ic_by_year.csv", index=False)
 
     ic_report.to_csv(root / "ic_summary.csv", index=False)
     write_html_report(

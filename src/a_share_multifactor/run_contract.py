@@ -1038,6 +1038,7 @@ def _replay(
                 "stamp_duty_rate": str(
                     costs.stamp_tax if spec.asset_class is AssetClass.EQUITY else 0
                 ),
+                "statutory_stamp_tax": "true" if costs.statutory_stamp_tax else "false",
                 "min_commission": str(costs.min_commission),
                 "execution_fee_source": "configured-strategy-cost-assumption",
             },

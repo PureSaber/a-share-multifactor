@@ -22,19 +22,30 @@ def neutralize_cross_section(
     date_col: str = "date",
 ) -> pd.DataFrame:
     """Demean factor columns within industry / market-cap groups per date."""
+    if not by:
+        return df.copy()
+    missing = [field for field in by if field not in df.columns]
+    if missing:
+        raise ValueError(
+            "Neutralization columns are missing: "
+            + ", ".join(missing)
+            + ". Refusing to leave the original factor values in place."
+        )
     result = df.copy()
     group_cols = [date_col]
 
-    if "industry" in by and "industry" in result.columns:
+    if "industry" in by:
         group_cols.append("industry")
-    if "market_cap" in by and "market_cap" in result.columns:
+    if "market_cap" in by:
         result["_mcap_bin"] = result.groupby(date_col)["market_cap"].transform(
             lambda s: _market_cap_bins(s)
         )
         group_cols.append("_mcap_bin")
 
     if len(group_cols) == 1:
-        return result
+        raise ValueError(
+            "Neutralization only supports industry and market_cap, got: " + ", ".join(by)
+        )
 
     for col in cols:
         if col not in result.columns:

@@ -21,6 +21,18 @@ def round_to_lots(shares: float, lot_size: int) -> int:
     return int(shares // lot_size) * lot_size
 
 
+def stamp_duty_rate(costs: CostsConfig, trade_date: object | None = None) -> float:
+    """Sell-side stamp duty. The statutory rate was cut from 0.1% to 0.05% on 2023-08-28."""
+    if costs.statutory_stamp_tax and trade_date is not None:
+        day = pd.Timestamp(trade_date)
+        if day.tzinfo is not None:
+            day = day.tz_convert("Asia/Shanghai").tz_localize(None)
+        if day.normalize() < pd.Timestamp("2023-08-28"):
+            return 0.001
+        return 0.0005
+    return costs.stamp_tax
+
+
 def buy_trade_cost(notional: float, costs: CostsConfig) -> float:
     """One-way buy cost: commission (with minimum), plus slippage."""
     if notional <= 0:
@@ -30,14 +42,42 @@ def buy_trade_cost(notional: float, costs: CostsConfig) -> float:
     return commission + slippage
 
 
-def sell_trade_cost(notional: float, costs: CostsConfig) -> float:
+def sell_trade_cost(
+    notional: float,
+    costs: CostsConfig,
+    trade_date: object | None = None,
+) -> float:
     """One-way sell cost: commission (with minimum), stamp tax, plus slippage."""
     if notional <= 0:
         return 0.0
     commission = max(notional * costs.commission, costs.min_commission)
-    stamp = notional * costs.stamp_tax
+    stamp = notional * stamp_duty_rate(costs, trade_date)
     slippage = notional * costs.slippage
     return commission + stamp + slippage
+
+
+def traded_prices(day: pd.DataFrame, price_col: str = "close") -> dict[str, float]:
+    """Price used for board-lot cash. Prefer the session's traded VWAP over a qfq close."""
+    frame = day.drop_duplicates("symbol")
+    symbols = frame["symbol"].astype(str)
+    if "entry_price" in frame.columns and frame["entry_price"].notna().any():
+        values = pd.to_numeric(frame["entry_price"], errors="coerce")
+        fallback = pd.to_numeric(frame[price_col], errors="coerce")
+        values = values.where(values.notna(), fallback)
+        return {symbol: float(price) for symbol, price in zip(symbols, values, strict=False)}
+    if {"amount", "volume"}.issubset(frame.columns):
+        volume = pd.to_numeric(frame["volume"], errors="coerce")
+        amount = pd.to_numeric(frame["amount"], errors="coerce")
+        if bool((volume > 0).all() and amount.notna().all()):
+            values = amount / volume
+            return {symbol: float(price) for symbol, price in zip(symbols, values, strict=False)}
+    if "adjustment" in frame.columns and frame["adjustment"].astype(str).eq("qfq").any():
+        raise ValueError(
+            "Retail lot sizing needs traded amount and volume. "
+            "A forward-adjusted close is not the historical board-lot price."
+        )
+    values = pd.to_numeric(frame[price_col], errors="coerce")
+    return {symbol: float(price) for symbol, price in zip(symbols, values, strict=False)}
 
 
 def portfolio_value(
@@ -104,6 +144,7 @@ def estimate_leg_rebalance_cost(
     curr_symbols: set[str],
     leg_capital: float,
     costs: CostsConfig,
+    trade_date: object | None = None,
 ) -> float:
     """
     Estimate yuan rebalance cost for one portfolio leg using per-trade minimums.
@@ -123,7 +164,7 @@ def estimate_leg_rebalance_cost(
 
     total = 0.0
     for _ in to_sell:
-        total += sell_trade_cost(per_name, costs)
+        total += sell_trade_cost(per_name, costs, trade_date=trade_date)
     for _ in to_buy:
         total += buy_trade_cost(per_name, costs)
     return total
@@ -188,6 +229,7 @@ def retail_rebalance(
     prices: dict[str, float],
     target_symbols: list[str],
     costs: CostsConfig,
+    trade_date: object | None = None,
 ) -> RetailRebalanceResult:
     """Rebalance toward target_symbols with optional partial (low-turnover) mode."""
     total_trade_cost = 0.0
@@ -204,7 +246,7 @@ def retail_rebalance(
                 del holdings[symbol]
                 continue
             notional = shares * price
-            trade_cost = sell_trade_cost(notional, costs)
+            trade_cost = sell_trade_cost(notional, costs, trade_date=trade_date)
             cash += notional - trade_cost
             total_trade_cost += trade_cost
             sells.append(TradeFill(symbol, shares, price, trade_cost))
@@ -229,7 +271,7 @@ def retail_rebalance(
             if price is None or price <= 0 or shares <= 0:
                 continue
             notional = shares * price
-            trade_cost = sell_trade_cost(notional, costs)
+            trade_cost = sell_trade_cost(notional, costs, trade_date=trade_date)
             cash += notional - trade_cost
             total_trade_cost += trade_cost
             sells.append(TradeFill(symbol, shares, price, trade_cost))
@@ -288,13 +330,16 @@ def simulate_long_only_rebalance(
     period_returns: dict[str, float],
     target_symbols: list[str],
     costs: CostsConfig,
+    trade_date: object | None = None,
 ) -> tuple[float, dict[str, int], float, float]:
     """
     Rebalance a long-only retail portfolio for one period.
 
     Returns (period_return, new_holdings, end_cash, total_trade_cost_yuan).
     """
-    result = retail_rebalance(cash, holdings, prices, target_symbols, costs)
+    result = retail_rebalance(
+        cash, holdings, prices, target_symbols, costs, trade_date=trade_date
+    )
     period_return = compute_period_return(result.cash, result.holdings, prices, period_returns)
     return period_return, result.holdings, result.cash, result.trade_cost
 
@@ -383,6 +428,7 @@ def retail_daily_step(
     current_date: pd.Timestamp,
     day_index: dict[pd.Timestamp, int],
     symbol_ranks: dict[str, int] | None = None,
+    locked_symbols: set[str] | None = None,
 ) -> RetailRebalanceResult:
     """One-day retail rebalance with minimum holding and early-exit exceptions."""
     total_trade_cost = 0.0
@@ -391,6 +437,7 @@ def retail_daily_step(
     target_set = set(target_symbols)
     rank_limit = sell_rank_limit(costs)
     ranks = symbol_ranks or {}
+    locked = locked_symbols or set()
 
     for symbol, shares in list(holdings.items()):
         position_meta = meta.get(symbol)
@@ -401,6 +448,9 @@ def retail_daily_step(
         if price is None or price <= 0 or shares <= 0:
             holdings.pop(symbol, None)
             meta.pop(symbol, None)
+            continue
+
+        if symbol in locked:
             continue
 
         prev = prev_prices.get(symbol, price)
@@ -424,7 +474,7 @@ def retail_daily_step(
                 continue
 
         notional = shares * price
-        trade_cost = sell_trade_cost(notional, costs)
+        trade_cost = sell_trade_cost(notional, costs, trade_date=current_date)
         cash += notional - trade_cost
         total_trade_cost += trade_cost
         sells.append(TradeFill(symbol, shares, price, trade_cost, reason))
@@ -497,10 +547,7 @@ def simulate_daily_retail_portfolio(
         if longs.empty and not holdings:
             continue
 
-        prices = (
-            day.drop_duplicates("symbol").set_index("symbol")[price_col].astype(float).to_dict()
-        )
-        prices = {str(k): float(v) for k, v in prices.items()}
+        prices = traded_prices(day, price_col)
 
         if prev_prices:
             prev_value = cash + sum(
@@ -521,6 +568,17 @@ def simulate_daily_retail_portfolio(
                 costs,
             )
 
+        if "can_buy" in day.columns:
+            blocked_buys = set(
+                day.loc[~day["can_buy"].fillna(False).astype(bool), "symbol"].astype(str)
+            )
+            target_symbols = [symbol for symbol in target_symbols if symbol not in blocked_buys]
+        locked_symbols = set()
+        if "can_sell" in day.columns:
+            locked_symbols = set(
+                day.loc[~day["can_sell"].fillna(True).astype(bool), "symbol"].astype(str)
+            )
+
         result = retail_daily_step(
             cash=cash,
             holdings=holdings,
@@ -532,6 +590,7 @@ def simulate_daily_retail_portfolio(
             current_date=trade_date,
             day_index=day_index,
             symbol_ranks=symbol_ranks,
+            locked_symbols=locked_symbols,
         )
         cash = result.cash
         holdings = result.holdings
