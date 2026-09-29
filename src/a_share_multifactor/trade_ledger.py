@@ -292,9 +292,7 @@ def _build_retail_long_ledger(
         _process_retail_trades(result, open_positions, rows, open_date, names, long_q)
 
     last_date = rebalance_idx[-1] if rebalance_idx else None
-    _flush_open_positions(
-        rows, open_positions, panel, last_date, price_col, names, long_q, config
-    )
+    _flush_open_positions(rows, open_positions, panel, last_date, price_col, names, long_q, config)
     return pd.DataFrame(rows)
 
 

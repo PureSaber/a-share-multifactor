@@ -21,7 +21,9 @@ from a_share_multifactor.synthesis import equal_weight_score
 from a_share_multifactor.trading_costs import sell_trade_cost
 
 
-def _bars(symbol: str, dates: list[str], closes: list[float], *, limit_up_on: set[str] | None = None):
+def _bars(
+    symbol: str, dates: list[str], closes: list[float], *, limit_up_on: set[str] | None = None
+):
     rows = []
     sealed = limit_up_on or set()
     for day, close in zip(dates, closes, strict=False):
@@ -63,9 +65,7 @@ def test_missing_st_identity_is_an_error() -> None:
 
 
 def test_missing_industry_neutralization_is_an_error() -> None:
-    df = pd.DataFrame(
-        {"date": pd.to_datetime(["2020-01-02"] * 2), "factor": [1.0, 2.0]}
-    )
+    df = pd.DataFrame({"date": pd.to_datetime(["2020-01-02"] * 2), "factor": [1.0, 2.0]})
     with pytest.raises(ValueError, match="industry"):
         neutralize_cross_section(df, ["factor"], by=["industry"])
 

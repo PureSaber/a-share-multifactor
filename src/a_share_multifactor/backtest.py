@@ -96,9 +96,7 @@ def write_outputs(
         validation_result.multiple_testing.to_csv(
             validation_dir / "multiple_testing.csv", index=False
         )
-        validation_result.leakage_audit.to_csv(
-            validation_dir / "leakage_audit.csv", index=False
-        )
+        validation_result.leakage_audit.to_csv(validation_dir / "leakage_audit.csv", index=False)
         (validation_dir / "summary.json").write_text(
             json.dumps(validation_result.summary, indent=2), encoding="utf-8"
         )
@@ -120,9 +118,7 @@ def write_outputs(
         validation_result.multiple_testing.to_csv(
             validation_dir / "multiple_testing.csv", index=False
         )
-        validation_result.leakage_audit.to_csv(
-            validation_dir / "leakage_audit.csv", index=False
-        )
+        validation_result.leakage_audit.to_csv(validation_dir / "leakage_audit.csv", index=False)
         (validation_dir / "summary.json").write_text(
             json.dumps(validation_result.summary, indent=2), encoding="utf-8"
         )

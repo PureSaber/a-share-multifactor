@@ -66,9 +66,15 @@ def annotate_tradability(df: pd.DataFrame) -> pd.DataFrame:
     at_low = (ordered["close"] - ordered["low"]).abs() <= close * 1e-4 + 1e-8
     suspended = pd.to_numeric(ordered["volume"], errors="coerce").fillna(0) <= 0
     known = prev_close.notna() & ret.notna()
-    limit_up = (~suspended) & known & at_high & (ret >= limits * _LIMIT_TOLERANCE) & (ret < limits + 0.05)
+    limit_up = (
+        (~suspended) & known & at_high & (ret >= limits * _LIMIT_TOLERANCE) & (ret < limits + 0.05)
+    )
     limit_down = (
-        (~suspended) & known & at_low & (ret <= -limits * _LIMIT_TOLERANCE) & (ret > -(limits + 0.05))
+        (~suspended)
+        & known
+        & at_low
+        & (ret <= -limits * _LIMIT_TOLERANCE)
+        & (ret > -(limits + 0.05))
     )
     ordered["suspended"] = suspended.to_numpy()
     ordered["limit_up"] = limit_up.fillna(False).to_numpy()

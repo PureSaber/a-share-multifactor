@@ -217,13 +217,9 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
             fundamentals=data_raw.get("fundamentals", defaults.data.fundamentals),
             universe=data_raw.get("universe", defaults.data.universe),
             benchmark=data_raw.get("benchmark", defaults.data.benchmark),
-            earnings_forecast=data_raw.get(
-                "earnings_forecast", defaults.data.earnings_forecast
-            ),
+            earnings_forecast=data_raw.get("earnings_forecast", defaults.data.earnings_forecast),
             northbound=data_raw.get("northbound", defaults.data.northbound),
-            industry_returns=data_raw.get(
-                "industry_returns", defaults.data.industry_returns
-            ),
+            industry_returns=data_raw.get("industry_returns", defaults.data.industry_returns),
             snapshot_root=data_raw.get("snapshot_root", defaults.data.snapshot_root),
         ),
         filters=FilterConfig(
@@ -250,9 +246,7 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
                 )
             ),
             forecast_max_age_days=int(
-                filters_raw.get(
-                    "forecast_max_age_days", defaults.filters.forecast_max_age_days
-                )
+                filters_raw.get("forecast_max_age_days", defaults.filters.forecast_max_age_days)
             ),
         ),
         preprocess=PreprocessConfig(
@@ -317,9 +311,13 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
             rank_change_threshold=int(
                 costs_raw.get("rank_change_threshold", defaults.costs.rank_change_threshold)
             ),
-            participation_rate=float(costs_raw.get("participation_rate", defaults.costs.participation_rate)),
+            participation_rate=float(
+                costs_raw.get("participation_rate", defaults.costs.participation_rate)
+            ),
             cash_buffer=float(costs_raw.get("cash_buffer", defaults.costs.cash_buffer)),
-            max_position_weight=float(costs_raw.get("max_position_weight", defaults.costs.max_position_weight)),
+            max_position_weight=float(
+                costs_raw.get("max_position_weight", defaults.costs.max_position_weight)
+            ),
         ),
         fetch=FetchConfig(
             max_workers=int(fetch_raw.get("max_workers", defaults.fetch.max_workers)),
@@ -338,9 +336,7 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
             train_size=int(validation_raw.get("train_size", defaults.validation.train_size)),
             test_size=int(validation_raw.get("test_size", defaults.validation.test_size)),
             step_size=int(validation_raw.get("step_size", defaults.validation.step_size)),
-            embargo_size=int(
-                validation_raw.get("embargo_size", defaults.validation.embargo_size)
-            ),
+            embargo_size=int(validation_raw.get("embargo_size", defaults.validation.embargo_size)),
             multiple_testing_alpha=float(
                 validation_raw.get(
                     "multiple_testing_alpha", defaults.validation.multiple_testing_alpha

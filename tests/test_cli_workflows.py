@@ -1,3 +1,4 @@
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -245,3 +246,29 @@ def test_backtest_cli_dry_run_and_write_path(
     backtest.main()
     assert (tmp_path / "report" / "ic_summary.csv").exists()
     assert (tmp_path / "report" / "report.html").exists()
+
+
+def test_readme_matches_package_scripts_and_dependency_pins() -> None:
+    project = Path("pyproject.toml").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+    scripts = re.findall(r"^(asm-[\w-]+) = ", project, flags=re.MULTILINE)
+    assert scripts == [
+        "asm-fetch",
+        "asm-backtest",
+        "asm-grid-search",
+        "asm-compare",
+        "asm-retail-grid",
+        "asm-decision",
+        "asm-research-case",
+        "asm-holdout-review",
+        "asm-ic-smoke",
+        "asm-market-data",
+    ]
+    for name in scripts:
+        assert f"`{name}`" in readme
+
+    pins = re.findall(r"git\+https://github.com/PureSaber/[^@\s]+@([0-9a-f]{40})", project)
+    governance = readme.split("## M6依赖和契约治理", 1)[1].split("## ", 1)[0]
+    assert re.findall(r"\b[0-9a-f]{40}\b", governance) == pins
+    assert "5b68af566ee1d47f62caa5449719912df6e17983" not in readme
+    assert not readme.rstrip().endswith("冻结发布标签尚不包含这些变更。")

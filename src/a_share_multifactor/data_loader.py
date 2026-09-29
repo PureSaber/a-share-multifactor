@@ -414,8 +414,7 @@ def _normalize_index_history(hist: pd.DataFrame) -> pd.DataFrame:
     normalized = hist.rename(columns=rename)
     if not {"date", "close"}.issubset(normalized.columns):
         raise ValueError(
-            "H00300 history is missing date or close. "
-            "The price index sh000300 is not a substitute."
+            "H00300 history is missing date or close. The price index sh000300 is not a substitute."
         )
     return normalized
 
@@ -451,13 +450,19 @@ def fetch_hs300_benchmark(
     hist = hist[(hist["date"] >= start) & (hist["date"] <= end)]
     hist["benchmark_kind"] = "total_return"
     hist["benchmark_symbol"] = "H00300"
-    return hist[["date", "benchmark_return", "benchmark_kind", "benchmark_symbol"]].dropna(
-        subset=["benchmark_return"]
-    ).reset_index(drop=True)
+    return (
+        hist[["date", "benchmark_return", "benchmark_kind", "benchmark_symbol"]]
+        .dropna(subset=["benchmark_return"])
+        .reset_index(drop=True)
+    )
 
 
 def _require_total_return_benchmark(benchmark: pd.DataFrame) -> None:
-    kind = benchmark["benchmark_kind"] if "benchmark_kind" in benchmark.columns else pd.Series(dtype=object)
+    kind = (
+        benchmark["benchmark_kind"]
+        if "benchmark_kind" in benchmark.columns
+        else pd.Series(dtype=object)
+    )
     if kind.empty or not kind.eq("total_return").all():
         raise ValueError(
             "Benchmark cache is not the CSI 300 total-return index H00300. "

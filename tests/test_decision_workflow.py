@@ -206,6 +206,8 @@ def test_provider_timeout_produces_a_blocked_card(setup_decision, monkeypatch):
     run = flow.run_decision(config, output, now=pd.Timestamp("2025-04-30T09:00:00Z"))
     card = json.loads((run / "decision.json").read_text(encoding="utf-8"))
     assert card["status"] == "blocked" and card["proposed_trades"] == []
+    assert card["evidence"]["rankable"] is False
+    assert card["evidence"]["comparability"] == "explicit_watchlist"
 
 
 def test_corporate_action_window_remains_blocked(setup_decision, tmp_path):

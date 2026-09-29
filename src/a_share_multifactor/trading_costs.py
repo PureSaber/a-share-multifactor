@@ -337,9 +337,7 @@ def simulate_long_only_rebalance(
 
     Returns (period_return, new_holdings, end_cash, total_trade_cost_yuan).
     """
-    result = retail_rebalance(
-        cash, holdings, prices, target_symbols, costs, trade_date=trade_date
-    )
+    result = retail_rebalance(cash, holdings, prices, target_symbols, costs, trade_date=trade_date)
     period_return = compute_period_return(result.cash, result.holdings, prices, period_returns)
     return period_return, result.holdings, result.cash, result.trade_cost
 

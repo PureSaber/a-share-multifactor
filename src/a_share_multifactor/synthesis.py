@@ -99,8 +99,11 @@ def rolling_ic_weight_score(
     for current_date in dates:
         lookback_start = pd.Timestamp(current_date) - pd.DateOffset(months=lookback_months)
         cutoff = pd.to_datetime(current_date, utc=True)
-        hist = result[(result[date_col] >= lookback_start) & (result[date_col] < current_date)
-                      & available_at.lt(cutoff)]
+        hist = result[
+            (result[date_col] >= lookback_start)
+            & (result[date_col] < current_date)
+            & available_at.lt(cutoff)
+        ]
         if hist.empty:
             continue
 
@@ -150,8 +153,11 @@ def rolling_ml_score(
     for current_date in dates:
         lookback_start = pd.Timestamp(current_date) - pd.DateOffset(months=lookback_months)
         cutoff = pd.to_datetime(current_date, utc=True)
-        hist = result[(result[date_col] >= lookback_start) & (result[date_col] < current_date)
-                      & available_at.lt(cutoff)]
+        hist = result[
+            (result[date_col] >= lookback_start)
+            & (result[date_col] < current_date)
+            & available_at.lt(cutoff)
+        ]
         train = hist[available + [return_col]].dropna()
         if len(train) < len(available) + 5:
             continue

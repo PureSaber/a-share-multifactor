@@ -61,9 +61,7 @@ def summarize_ic(ic_series: pd.Series) -> dict[str, float | int]:
     n_obs = len(clean)
     sample_std = float(clean.std(ddof=1)) if n_obs > 1 else float("nan")
     ic_tstat = (
-        mean_ic / (sample_std / sqrt(n_obs))
-        if n_obs > 1 and sample_std > 0
-        else float("nan")
+        mean_ic / (sample_std / sqrt(n_obs)) if n_obs > 1 and sample_std > 0 else float("nan")
     )
     return {
         "mean_ic": mean_ic,

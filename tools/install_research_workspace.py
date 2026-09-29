@@ -19,9 +19,11 @@ def main():
         if not (repo / "pyproject.toml").is_file():
             raise FileNotFoundError(f"Missing reviewed sibling repository: {repo}")
     uv = shutil.which("uv")
-    command = [uv, "pip", "install", "--python", sys.executable, "--no-deps"] if uv else [
-        sys.executable, "-m", "pip", "install", "--no-deps"
-    ]
+    command = (
+        [uv, "pip", "install", "--python", sys.executable, "--no-deps"]
+        if uv
+        else [sys.executable, "-m", "pip", "install", "--no-deps"]
+    )
     for repo in siblings:
         command.extend(["--editable", str(repo)])
     subprocess.run(command, check=True, cwd=root)

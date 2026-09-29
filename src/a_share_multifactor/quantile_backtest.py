@@ -431,9 +431,7 @@ def _quantile_backtest_stats(
     if not benchmark.empty and not long_short.empty:
         aligned_benchmark = align_benchmark_returns(benchmark, long_short.index)
         excess_ls = long_short - aligned_benchmark
-        stats_rows.append(
-            _portfolio_stats_row(excess_ls, periods_per_year, "long_short_excess")
-        )
+        stats_rows.append(_portfolio_stats_row(excess_ls, periods_per_year, "long_short_excess"))
 
     return pd.DataFrame(stats_rows)
 

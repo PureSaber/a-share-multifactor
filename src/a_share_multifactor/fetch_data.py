@@ -89,7 +89,11 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("./data"))
     parser.add_argument("--force", action="store_true", help="Force refresh even if cache exists")
     parser.add_argument("--symbols-limit", type=int, default=0, help="Limit symbols for debugging")
-    parser.add_argument("--fetch-alt", action="store_true", help="Also fetch alt data (earnings, northbound, industry)")
+    parser.add_argument(
+        "--fetch-alt",
+        action="store_true",
+        help="Also fetch alt data (earnings, northbound, industry)",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -210,7 +214,9 @@ def main() -> None:
         if not args.force and benchmark_path.exists():
             existing = load_parquet(benchmark_path)
             existing_kind = (
-                existing["benchmark_kind"] if "benchmark_kind" in existing.columns else pd.Series(dtype=object)
+                existing["benchmark_kind"]
+                if "benchmark_kind" in existing.columns
+                else pd.Series(dtype=object)
             )
             if not existing_kind.empty and existing_kind.eq("total_return").all():
                 benchmark = (

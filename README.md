@@ -128,6 +128,11 @@ pytest -q
 | `asm-grid-search` | 因子参数扫描 |
 | `asm-compare` | 多合成方法对比（含散户模式） |
 | `asm-retail-grid` | 散户 OLS 参数网格（81 组） |
+| `asm-decision` | 真实公开数据到日／周频模拟决策卡 |
+| `asm-research-case` | 固定观察名单的回顾研究案例 |
+| `asm-holdout-review` | 留出区间结束后封存评审 |
+| `asm-ic-smoke` | 共享因子 IC 冒烟 |
+| `asm-market-data` | 决策取数子进程（由 `asm-decision` 调用） |
 
 ## 配置文件
 
@@ -138,6 +143,8 @@ pytest -q
 | `configs/run_retail_10k.yaml` | 1 万散户、**月度**调仓 |
 | `configs/run_retail_daily_10k.yaml` | 1 万散户、**日/周频**调仓 |
 | `configs/run_report.yaml` | 生成 HTML 报告 |
+| `configs/decision_watchlist.yaml` | 四只股票的模拟决策卡 |
+| `configs/decision_daily.yaml` | 日频研究观察名单与留出区间 |
 
 回测前请将各配置中的 `end_date` 改为你需要的截止日期，然后重新 `asm-fetch`。
 
@@ -193,12 +200,19 @@ fixture目录是版本化、显式、PIT的测试目录，其有效期是认证f
 
 ## M6依赖和契约治理
 
-本研究修复分支的`pyproject.toml`和`requirements.lock`固定到包含修复的不可变提交：
-QDK `5b68af566ee1d47f62caa5449719912df6e17983`、QLab `938927e5bcad641d46e3bd733e6323719d44aa50`。
-QFactors 固定 `0ee0bcd66a94d887dbcc6196dfb85b154550c196`，
-QExec 固定 `67164347c0a1fbb3e4f7a1b49ab9b172d02e86db`，统一公司行动、试验登记与账户导入能力。
-这是一组开发版本依赖，不使用浮动分支；旧发布标签不修改。默认安装和 CI 均包含此次修复，
-不再依靠本地相邻仓库覆盖来通过测试。正式发布仍需完成对应仓库的发布流程。
+发行包版本仍是 `0.4.2`。当前开发分支尚未发版，依赖以 `pyproject.toml` 与 `requirements.lock`
+中的不可变提交为准，不使用浮动分支，也不改写已发布标签：
+
+| 包 | 提交 |
+|----|------|
+| quant-data-kit | `ba136c2fa2eea121bfb2ad7887b536c3952586f7` |
+| quant-factors | `249fb621d4d880942cb5dfbbcd812c0d45bf45a2` |
+| quant-execution | `21aace45d2dde6458db8fcda4829f252f8c640f1` |
+| quant-lab | `a923a791315312a4d9caecf3b9776f08d53bb736` |
+| quant-portfolio | `2ca306ec35c52e773d3f0021565a41d6def6f810` |
+| quant-risk-monitor | `ea93b100a97e0226e90e71fac06f70a40baaa212` |
+
+默认安装和 CI 均包含这些提交，不再依靠本地相邻仓库覆盖来通过测试。正式发布仍需完成对应仓库的发布流程。
 
 锁文件由规范环境Windows+Python3.10和固定`pip-tools==7.6.1`重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
 Notebook工具不进入CI的dev闭包，需要时单独安装`.[notebook]`。并在Python3.10、3.11、3.12
@@ -231,7 +245,7 @@ pre-commit run --all-files
 
 CI（GitHub Actions）在Windows和Linux上分别运行Python3.10、3.11、3.12矩阵，先从固定官方wheel
 双重重建并核验派生wheel哈希与payload；随后执行严格锁安装、双`pip check`、MiniRacer运行烟测、
-Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%。Windows+Python3.10job还会
+Ruff 检查，以及 `ruff format --check src tests scripts tools`、完整 Pytest，并要求 `run_contract.py` 纯分支覆盖率不低于 97%。Windows+Python 3.10 job 还会
 从零连续重建锁两次并与仓库版本比较；Linux只安装并验证这份规范锁，因为依赖元数据中的平台条件
 （例如`colorama`）会让Linux上的重新解析得到不同但不具规范性的闭包。
 
@@ -251,8 +265,3 @@ Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%�
 
 - 因子投资核心概念（IC、IR、分层回测）
 - 使用 Python 量化库进行 A 股因子研究的方法论
-# 日／周频决策开发入口
-
-本地联合开发版本已增加真实公开数据到模拟决策卡的入口，详见
-[研究可信度与决策工作流](docs/research-decision-workflow.md)。需要同时安装修订后的
-`quant-data-kit` 与 `quant-lab`；冻结发布标签尚不包含这些变更。

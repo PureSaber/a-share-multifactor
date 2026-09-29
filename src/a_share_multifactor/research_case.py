@@ -35,9 +35,7 @@ def run_case(config_path: Path, inputs: Path, output: Path, *, sessions: int = 1
     settings = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     manifest, frames = load_inputs(inputs)
     cfg = _dict_to_config(settings["app"])
-    cfg = replace(
-        cfg, filters=replace(cfg.filters, use_historical_universe=False), rebalance_freq="daily"
-    )
+    cfg = replace(cfg, universe="explicit_watchlist", rebalance_freq="daily")
     raw = frames["raw"].copy().sort_values(["symbol", "date"])
     raw["date"] = pd.to_datetime(raw.date)
     adjusted = frames["adjusted"][["symbol", "date", "open", "high", "low", "close"]]
@@ -144,6 +142,8 @@ def run_case(config_path: Path, inputs: Path, output: Path, *, sessions: int = 1
         validation.multiple_testing.to_csv(output / "fdr.csv", index=False)
         summary = {
             "scope": "retrospective exploratory fixed-watchlist case",
+            "comparability": "fixed_watchlist_case",
+            "rankable": False,
             "start": str(start.date()),
             "end": str(end.date()),
             "sessions": sessions,

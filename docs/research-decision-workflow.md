@@ -12,6 +12,7 @@ python -m pip install --no-deps -r requirements.lock
 python -m pip install --no-deps --no-build-isolation -e .
 python -m pip check
 python -m a_share_multifactor.decision_workflow --config configs/decision_watchlist.yaml
+# 等价安装入口: asm-decision --config configs/decision_watchlist.yaml
 ```
 
 仅在跨仓库开发时才需要将三个仓库并列放置并执行 `tools/install_research_workspace.py`。

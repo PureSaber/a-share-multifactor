@@ -1,4 +1,4 @@
-﻿"""Real public daily data -> reproducible research -> one paper decision card.
+"""Real public daily data -> reproducible research -> one paper decision card.
 
 This bounded watchlist profile is deliberately distinct from historical index
 research and from the L2 market-data release certification.
@@ -109,6 +109,22 @@ def fetch_inputs(root: Path, settings: dict, start: str, end: str, captured_at: 
     return manifest
 
 
+def _restrict_membership(
+    frame: pd.DataFrame, membership: pd.DataFrame, symbols: list[str]
+) -> pd.DataFrame:
+    required = {"symbol", "date", "in_universe"}
+    if not required.issubset(membership.columns):
+        raise ValueError("membership calendar requires symbol, date and in_universe")
+    allowed = membership.loc[membership["in_universe"].eq(1), ["symbol", "date"]].copy()
+    allowed["date"] = pd.to_datetime(allowed["date"])
+    allowed["symbol"] = allowed["symbol"].astype(str)
+    restricted = frame.merge(allowed, on=["symbol", "date"], how="inner")
+    missing = set(symbols) - set(restricted["symbol"].astype(str))
+    if restricted.empty or missing:
+        raise ValueError("historical membership does not cover the watchlist")
+    return restricted.sort_values(["symbol", "date"]).reset_index(drop=True)
+
+
 def load_inputs(root: Path) -> tuple[dict, dict[str, pd.DataFrame]]:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     frames = {}
@@ -117,7 +133,7 @@ def load_inputs(root: Path) -> tuple[dict, dict[str, pd.DataFrame]]:
         "raw",
         "adjusted",
         "benchmark",
-        *[key for key in ("actions", "status") if key in manifest["files"]],
+        *[key for key in ("actions", "status", "membership") if key in manifest["files"]],
     ):
         entry = manifest["files"][name]
         path = (root / entry["file"]).resolve()
@@ -353,7 +369,7 @@ def _run_decision(
         "proposed_trades": [],
         "estimated_cost": {},
         "risk": {},
-        "evidence": {},
+        "evidence": {"comparability": "explicit_watchlist", "rankable": False},
         "reasons": [],
     }
     registry = TrialRegistry(output_root / "experiments.db")
@@ -383,11 +399,7 @@ def _run_decision(
             )
         settings["risk"] = {**settings["risk"], "classifications": classifications}
         config = _dict_to_config(settings["app"])
-        config = replace(
-            config,
-            universe="explicit_watchlist",
-            filters=replace(config.filters, use_historical_universe=False),
-        )
+        config = replace(config, universe="explicit_watchlist")
         card["risk"] = settings["risk"]
         config_digest = sha256(config_path)
         _save_json(
@@ -469,6 +481,9 @@ def _run_decision(
         card["valid_until"] = valid_until.isoformat()
         raw = frames["raw"].copy().sort_values(["symbol", "date"])
         raw["date"] = pd.to_datetime(raw.date)
+        if "membership" in frames:
+            raw = _restrict_membership(raw, frames["membership"], symbols)
+            card["evidence"]["historical_membership"] = True
         config = replace(config, start_date=start, end_date=card["as_of"], rebalance_freq="daily")
         adjusted = frames["adjusted"][["symbol", "date", "open", "high", "low", "close"]]
         if adjusted.duplicated(["symbol", "date"]).any():

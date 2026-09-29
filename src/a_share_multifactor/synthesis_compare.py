@@ -116,7 +116,8 @@ def run_synthesis_comparison(
     ledgers: dict[str, pd.DataFrame] = {}
     periods_per_year = _periods_per_year(
         trial_config,
-        daily=long_only and trial_config.costs.retail_mode
+        daily=long_only
+        and trial_config.costs.retail_mode
         and trial_config.costs.trade_freq in {"daily", "weekly"},
     )
 

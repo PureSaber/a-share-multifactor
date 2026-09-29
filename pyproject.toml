@@ -45,6 +45,10 @@ asm-grid-search = "a_share_multifactor.grid_search:main"
 asm-compare = "a_share_multifactor.synthesis_compare:main"
 asm-retail-grid = "a_share_multifactor.retail_param_grid:main"
 asm-decision = "a_share_multifactor.decision_workflow:main"
+asm-research-case = "a_share_multifactor.research_case:main"
+asm-holdout-review = "a_share_multifactor.holdout_review:main"
+asm-ic-smoke = "a_share_multifactor.ic_smoke:main"
+asm-market-data = "a_share_multifactor.market_data:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

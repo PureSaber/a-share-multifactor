@@ -129,9 +129,7 @@ def prepare_factor_panel(config: AppConfig, raw_df: pd.DataFrame) -> pd.DataFram
     )
     missing = [col for col in config.factors if col not in panel.columns]
     if missing:
-        raise ValueError(
-            "Configured factors are missing from the panel: " + ", ".join(missing)
-        )
+        raise ValueError("Configured factors are missing from the panel: " + ", ".join(missing))
     empty = [col for col in factor_cols if panel[col].isna().all()]
     if empty:
         raise ValueError(

@@ -26,7 +26,9 @@ def main() -> None:
 
     prices = load_parquet(price_path)
     symbols = sorted(prices["symbol"].unique())
-    industries = sorted(prices["industry"].dropna().unique()) if "industry" in prices.columns else ["未知"]
+    industries = (
+        sorted(prices["industry"].dropna().unique()) if "industry" in prices.columns else ["未知"]
+    )
 
     earnings = pd.DataFrame(
         {

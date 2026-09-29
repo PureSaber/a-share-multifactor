@@ -5,9 +5,11 @@ factor specification and future holdout. `quant-pipeline` runs the producer,
 indexes successful and blocked decisions, and regenerates the report-hub page.
 Use the integrated install profile in quant-workspace, not mixed historical tags.
 
+安装后的命令与对应的 `python -m` 入口参数相同。
+
 ```sh
-python -m a_share_multifactor.decision_workflow --config configs/decision_daily.yaml --output ../daily-runs
-python -m a_share_multifactor.research_case --config configs/decision_daily.yaml --inputs INPUT_DIRECTORY --output NEW_CASE_DIRECTORY --sessions 40
+asm-decision --config configs/decision_daily.yaml --output ../daily-runs
+asm-research-case --config configs/decision_daily.yaml --inputs INPUT_DIRECTORY --output NEW_CASE_DIRECTORY --sessions 40
 ```
 
 Each normal decision attempt is registered before provider access and remains in
@@ -18,7 +20,7 @@ account. Diagnostic labels are limited to those maturing strictly before holdout
 The review command refuses early, incomplete, changed-code and repeated evaluations:
 
 ```sh
-python -m a_share_multifactor.holdout_review --db ../daily-runs/experiments.db --study ashare-momentum-volatility-2026q4 --run FINAL_RUN_DIRECTORY
+asm-holdout-review --db ../daily-runs/experiments.db --study ashare-momentum-volatility-2026q4 --run FINAL_RUN_DIRECTORY
 ```
 
 Corporate actions retain the source record and announcement/record/ex/payment/share
