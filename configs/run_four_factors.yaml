@@ -58,6 +58,7 @@ ic_decay_horizons: [1, 5, 10, 20]
 costs:
   commission: 0.0003
   slippage: 0.001
+  statutory_stamp_tax: true
 
 fetch:
   max_workers: 2

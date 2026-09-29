@@ -55,6 +55,12 @@ def evaluate(db: Path, study_id: str, run: Path, *, now=None) -> dict:
     benchmark = frames["benchmark"].set_index("date").benchmark_return.reindex(expected)
     if benchmark.isna().any():
         raise ValueError("Holdout benchmark has gaps")
+    benchmark_name = (
+        "hs300_total_return_before_costs"
+        if "benchmark_kind" in frames["benchmark"].columns
+        and frames["benchmark"]["benchmark_kind"].eq("total_return").all()
+        else "hs300_price_index_before_costs"
+    )
     evidence = clean_json(
         {
             "start": spec["holdout_start"],
@@ -64,7 +70,7 @@ def evaluate(db: Path, study_id: str, run: Path, *, now=None) -> dict:
             "standard_manifest_sha256": sha256(run / "standard/v2/run_manifest.json"),
             "observations": len(expected),
             "strategy_net": return_statistics(selected.net_return, 252),
-            "hs300_price_index_before_costs": return_statistics(benchmark, 252),
+            benchmark_name: return_statistics(benchmark, 252),
             "scope": "single preregistered forward sample; not automatic investment approval",
         }
     )

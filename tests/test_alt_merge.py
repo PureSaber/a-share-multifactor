@@ -101,6 +101,7 @@ def test_build_dataset_without_alt(tmp_path) -> None:
             "low": [9.8, 9.9, 19.8, 19.9],
             "close": [10.2, 10.3, 20.1, 20.3],
             "volume": [1000, 1100, 2000, 2100],
+            "name": ["平安银行", "平安银行", "万科A", "万科A"],
         }
     )
     sample_fundamentals = pd.DataFrame(
