@@ -43,6 +43,7 @@ class FilterConfig:
     fundamental_lag_days: int = 0
     fundamental_max_age_days: int = 550
     require_availability_timestamp: bool = True
+    forecast_max_age_days: int = 120
 
 
 @dataclass
@@ -83,6 +84,7 @@ class CostsConfig:
     retail_mode: bool = False
     min_commission: float = 5.0
     stamp_tax: float = 0.0005
+    statutory_stamp_tax: bool = False
     lot_size: int = 100
     initial_capital: float = 100_000.0
     max_holdings: int = 0
@@ -247,6 +249,11 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
                     defaults.filters.require_availability_timestamp,
                 )
             ),
+            forecast_max_age_days=int(
+                filters_raw.get(
+                    "forecast_max_age_days", defaults.filters.forecast_max_age_days
+                )
+            ),
         ),
         preprocess=PreprocessConfig(
             winsorize=winsorize,
@@ -267,6 +274,9 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
             retail_mode=bool(costs_raw.get("retail_mode", defaults.costs.retail_mode)),
             min_commission=float(costs_raw.get("min_commission", defaults.costs.min_commission)),
             stamp_tax=float(costs_raw.get("stamp_tax", defaults.costs.stamp_tax)),
+            statutory_stamp_tax=bool(
+                costs_raw.get("statutory_stamp_tax", defaults.costs.statutory_stamp_tax)
+            ),
             lot_size=int(costs_raw.get("lot_size", defaults.costs.lot_size)),
             initial_capital=float(costs_raw.get("initial_capital", defaults.costs.initial_capital)),
             max_holdings=int(costs_raw.get("max_holdings", defaults.costs.max_holdings)),

@@ -7,7 +7,6 @@ import logging
 from pathlib import Path
 
 import pandas as pd
-from quant_data_kit.providers.benchmark import fetch_hs300_benchmark
 from quant_data_kit.providers.earnings_forecast import fetch_earnings_forecasts
 from quant_data_kit.providers.fundamentals import fetch_fundamentals
 from quant_data_kit.providers.industry import fetch_industry_returns
@@ -21,6 +20,8 @@ from quant_data_kit.providers.universe import (
 from a_share_multifactor.config import load_config
 from a_share_multifactor.data_loader import (
     build_dataset,
+    fetch_hs300_benchmark,
+    history_start,
     incremental_start_date,
     load_parquet,
     save_parquet,
@@ -66,16 +67,20 @@ def _fetch_alt_data(
             prices = load_parquet(price_path)
             if "industry" in prices.columns:
                 industries = sorted(prices["industry"].dropna().unique().tolist())
-        if industries:
-            logger.info("Fetching industry returns for %s industries...", len(industries))
-            industry_returns = fetch_industry_returns(
-                industries,
-                config.start_date,
-                config.end_date,
-                sleep_seconds=config.fetch.sleep_seconds,
+        if not industries:
+            raise ValueError(
+                "Price cache has no industry column, so industry returns were not fetched. "
+                "industry_rs_20d would be entirely missing."
             )
-            save_parquet(industry_returns, industry_path)
-            logger.info("Saved industry returns: %s rows", len(industry_returns))
+        logger.info("Fetching industry returns for %s industries...", len(industries))
+        industry_returns = fetch_industry_returns(
+            industries,
+            config.start_date,
+            config.end_date,
+            sleep_seconds=config.fetch.sleep_seconds,
+        )
+        save_parquet(industry_returns, industry_path)
+        logger.info("Saved industry returns: %s rows", len(industry_returns))
 
 
 def main() -> None:
@@ -115,15 +120,39 @@ def main() -> None:
     )
 
     symbols: list[str] = []
+    universe = pd.DataFrame()
+    if config.filters.use_historical_universe:
+        if refresh_universe:
+            logger.info("Building historical universe membership...")
+            universe = fetch_hs300_constituents_history(config.start_date, config.end_date)
+            save_parquet(universe, universe_path)
+            logger.info("Saved universe: %s (%s rows)", universe_path, len(universe))
+        elif universe_path.exists():
+            universe = load_parquet(universe_path)
+
+    def research_symbols() -> list[str]:
+        if config.filters.use_historical_universe:
+            if universe.empty:
+                raise ValueError(
+                    "Historical index membership is empty. "
+                    "Refusing to price only today's constituents."
+                )
+            chosen = sorted(universe["symbol"].astype(str).unique().tolist())
+        else:
+            chosen = fetch_hs300_constituents()
+        if args.symbols_limit > 0:
+            chosen = chosen[: args.symbols_limit]
+        return chosen
 
     if refresh_prices:
-        logger.info("Fetching HS300 constituents and daily prices...")
-        symbols = fetch_hs300_constituents()
-        if args.symbols_limit > 0:
-            symbols = symbols[: args.symbols_limit]
+        logger.info("Fetching daily prices for the research universe...")
+        symbols = research_symbols()
+        price_fetch_start = (
+            history_start(config) if args.force or not price_path.exists() else price_start
+        )
         prices = fetch_daily_prices(
             symbols,
-            price_start,
+            price_fetch_start,
             config.end_date,
             sleep_seconds=config.fetch.sleep_seconds,
             max_workers=config.fetch.max_workers,
@@ -142,12 +171,8 @@ def main() -> None:
         logger.info("Price cache up to date: %s", price_path)
 
     if refresh_fundamentals:
-        if refresh_prices:
-            symbols = sorted(prices["symbol"].unique().tolist())  # type: ignore[name-defined]
-        else:
-            symbols = fetch_hs300_constituents()
-            if args.symbols_limit > 0:
-                symbols = symbols[: args.symbols_limit]
+        if not symbols:
+            symbols = research_symbols()
         fund_start = (
             config.start_date
             if args.force
@@ -174,14 +199,8 @@ def main() -> None:
     else:
         logger.info("Fundamentals cache up to date: %s", fundamentals_path)
 
-    if refresh_universe and config.filters.use_historical_universe:
-        logger.info("Building historical universe membership...")
-        universe = fetch_hs300_constituents_history(config.start_date, config.end_date)
-        save_parquet(universe, universe_path)
-        logger.info("Saved universe: %s (%s rows)", universe_path, len(universe))
-
     if refresh_benchmark:
-        logger.info("Fetching benchmark index returns...")
+        logger.info("Fetching CSI 300 total-return benchmark...")
         bench_start = (
             config.start_date
             if args.force
@@ -190,11 +209,15 @@ def main() -> None:
         benchmark = fetch_hs300_benchmark(bench_start, config.end_date)
         if not args.force and benchmark_path.exists():
             existing = load_parquet(benchmark_path)
-            benchmark = (
-                pd.concat([existing, benchmark], ignore_index=True)
-                .drop_duplicates(subset=["date"])
-                .sort_values("date")
+            existing_kind = (
+                existing["benchmark_kind"] if "benchmark_kind" in existing.columns else pd.Series(dtype=object)
             )
+            if not existing_kind.empty and existing_kind.eq("total_return").all():
+                benchmark = (
+                    pd.concat([existing, benchmark], ignore_index=True)
+                    .drop_duplicates(subset=["date"])
+                    .sort_values("date")
+                )
         save_parquet(benchmark, benchmark_path)
         logger.info("Saved benchmark: %s (%s rows)", benchmark_path, len(benchmark))
 
@@ -206,7 +229,13 @@ def main() -> None:
     if args.fetch_alt and symbols:
         _fetch_alt_data(config, args, symbols, args.data_dir)
 
-    panel = build_dataset(config, data_dir=args.data_dir, force_refresh=False, include_alt=args.fetch_alt)
+    panel = build_dataset(
+        config,
+        data_dir=args.data_dir,
+        force_refresh=False,
+        include_alt=args.fetch_alt,
+        allow_incomplete_universe=args.symbols_limit > 0,
+    )
     logger.info(
         "Dataset ready: %s rows, %s symbols, %s to %s",
         len(panel),

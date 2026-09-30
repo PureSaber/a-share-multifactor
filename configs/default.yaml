@@ -41,6 +41,8 @@ filters:
   fundamental_lag_days: 0
   fundamental_max_age_days: 550
   require_availability_timestamp: true
+  # 业绩预告超过这么多天后作废，避免一年前的预告一直进入得分
+  forecast_max_age_days: 120
 
 # 严格样本外验证：训练窗口、测试窗口和embargo均按交易日计
 validation:
@@ -76,6 +78,8 @@ grid_search:
 costs:
   commission: 0.0003
   slippage: 0.001
+  # 2023-08-28 之前卖出按千一，当天及之后按万五
+  statutory_stamp_tax: true
   # 散户模拟（可选）
   # retail_mode: true
   # min_commission: 5.0

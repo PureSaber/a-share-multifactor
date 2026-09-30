@@ -17,6 +17,7 @@ from a_share_multifactor.trading_costs import (
     select_retail_targets,
     simulate_daily_retail_portfolio,
     simulate_long_only_rebalance,
+    traded_prices,
 )
 
 
@@ -127,6 +128,21 @@ def _portfolio_stats_row(
     return {"portfolio": portfolio, **return_statistics(series, periods_per_year)}
 
 
+def align_benchmark_returns(benchmark: pd.Series, index: pd.Index) -> pd.Series:
+    """Align benchmark periods to the portfolio. Missing dates are an error."""
+    if benchmark.empty:
+        return benchmark
+    aligned = benchmark.reindex(index)
+    if aligned.isna().any():
+        missing = list(aligned.index[aligned.isna()][:3])
+        sample = ", ".join(str(pd.Timestamp(day).date()) for day in missing)
+        raise ValueError(
+            f"Benchmark returns are missing for {int(aligned.isna().sum())} portfolio dates "
+            f"({sample}). Those months are not filled with zero."
+        )
+    return aligned.astype(float)
+
+
 def _build_excess_returns(
     quantile_returns: pd.DataFrame,
     benchmark: pd.Series,
@@ -134,7 +150,7 @@ def _build_excess_returns(
     excess = pd.DataFrame(index=quantile_returns.index)
     if benchmark.empty:
         return excess
-    aligned_benchmark = benchmark.reindex(quantile_returns.index).fillna(0.0)
+    aligned_benchmark = align_benchmark_returns(benchmark, quantile_returns.index)
     for col in quantile_returns.columns:
         excess[col] = quantile_returns[col] - aligned_benchmark
     return excess
@@ -231,9 +247,7 @@ def _long_only_rebalance_loop(
         if config.costs.retail_mode:
             if price_col not in day.columns:
                 raise ValueError(f"Price column not found for retail mode: {price_col}")
-            prices = (
-                day.drop_duplicates("symbol").set_index("symbol")[price_col].astype(float).to_dict()
-            )
+            prices = traded_prices(day)
             total_value = portfolio_value(cash, holdings, prices)
             target_symbols = select_retail_targets(
                 longs,
@@ -265,6 +279,7 @@ def _long_only_rebalance_loop(
                 period_returns=period_rets,
                 target_symbols=target_symbols,
                 costs=config.costs,
+                trade_date=rebalance_date,
             )
         else:
             gross = float(longs[return_col].mean())
@@ -291,7 +306,7 @@ def _long_only_rebalance_loop(
     if not series.empty:
         stats_rows.append(_portfolio_stats_row(series, periods_per_year, "long_only"))
         if not benchmark.empty:
-            excess_series = portfolio - benchmark.reindex(portfolio.index).fillna(0.0)
+            excess_series = portfolio - align_benchmark_returns(benchmark, portfolio.index)
             stats_rows.append(
                 _portfolio_stats_row(excess_series, periods_per_year, "long_only_excess")
             )
@@ -383,7 +398,7 @@ def _quantile_rebalance_loop(
                 prev_set = prev_holdings.get(q, set())
                 curr_set = curr_holdings.get(q, set())
                 yuan_cost = estimate_leg_rebalance_cost(
-                    prev_set, curr_set, leg_capital, config.costs
+                    prev_set, curr_set, leg_capital, config.costs, trade_date=rebalance_date
                 )
                 net = gross - yuan_cost / portfolio_value if portfolio_value > 0 else gross
             else:
@@ -414,7 +429,7 @@ def _quantile_backtest_stats(
         stats_rows.append(_portfolio_stats_row(long_short, periods_per_year, "long_short"))
 
     if not benchmark.empty and not long_short.empty:
-        aligned_benchmark = benchmark.reindex(long_short.index).fillna(0.0)
+        aligned_benchmark = align_benchmark_returns(benchmark, long_short.index)
         excess_ls = long_short - aligned_benchmark
         stats_rows.append(
             _portfolio_stats_row(excess_ls, periods_per_year, "long_short_excess")

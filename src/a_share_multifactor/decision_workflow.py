@@ -1,4 +1,4 @@
-"""Real public daily data -> reproducible research -> one paper decision card.
+﻿"""Real public daily data -> reproducible research -> one paper decision card.
 
 This bounded watchlist profile is deliberately distinct from historical index
 research and from the L2 market-data release certification.
@@ -39,6 +39,7 @@ from a_share_multifactor.run_contract import (
     replay_results,
 )
 from a_share_multifactor.synthesis import synthesize
+from a_share_multifactor.trading_costs import stamp_duty_rate
 
 
 def sha256(path: Path) -> str:
@@ -293,7 +294,7 @@ def _paper_proposal(replay, scored, config, catalog_path, as_of):
         slip = float(abs(execution_price - reference) * Decimal(str(abs(delta))))
         execution_amount = float(execution_price * Decimal(str(abs(delta))))
         fee = max(execution_amount * config.costs.commission, config.costs.min_commission)
-        fee += execution_amount * config.costs.stamp_tax if delta < 0 else 0
+        fee += execution_amount * stamp_duty_rate(config.costs, as_of) if delta < 0 else 0
         fees += fee
         slippage += slip
         trades.append(
@@ -591,11 +592,17 @@ def _run_decision(
             raise ValueError("Benchmark does not cover every simulated NAV date")
         benchmark.iloc[0] = 0.0  # Virtual account starts at the first observed close.
         stats = results.stats.iloc[0].to_dict()
+        benchmark_frame = frames["benchmark"]
+        benchmark_is_total_return = (
+            "benchmark_kind" in benchmark_frame.columns
+            and benchmark_frame["benchmark_kind"].eq("total_return").all()
+        )
+        benchmark_key = "hs300_total_return" if benchmark_is_total_return else "hs300_price_index"
         card["validation"].update(
             {
                 "simulation_start": str(simulation_start.date()),
                 "net_performance": stats,
-                "hs300_price_index": return_statistics(benchmark.iloc[1:], 252),
+                benchmark_key: return_statistics(benchmark.iloc[1:], 252),
                 "forward_observation_days": int(
                     (
                         returns.index

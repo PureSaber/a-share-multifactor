@@ -29,6 +29,7 @@ app:
     commission: 0.0003
     min_commission: 5
     stamp_tax: 0.0005
+    statutory_stamp_tax: true
     slippage: 0.001
     participation_rate: 0.01
     max_holdings: 2

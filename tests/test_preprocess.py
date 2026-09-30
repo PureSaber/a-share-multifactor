@@ -50,7 +50,11 @@ def test_prepare_factor_panel() -> None:
         {
             "symbol": ["000001"] * 25,
             "date": pd.date_range("2020-01-01", periods=25, freq="B"),
+            "open": [100 + i for i in range(25)],
+            "high": [101 + i for i in range(25)],
+            "low": [99 + i for i in range(25)],
             "close": [100 + i for i in range(25)],
+            "volume": [1000] * 25,
             "market_cap": [1e10] * 25,
             "pe_ratio": [10.0] * 25,
             "pb_ratio": [2.0] * 25,

@@ -8,6 +8,7 @@ from a_share_multifactor.calendar import rebalance_dates as get_rebalance_dates
 from a_share_multifactor.config import AppConfig
 from a_share_multifactor.factors import apply_factor_directions, compute_factors
 from a_share_multifactor.neutralize import neutralize_cross_section
+from a_share_multifactor.tradability import assign_executable_period_returns
 
 
 def winsorize_cross_section(
@@ -45,10 +46,12 @@ def standardize_cross_section(
     for col in cols:
         if col not in result.columns:
             continue
-        mean = result.groupby(date_col)[col].transform("mean")
-        std = result.groupby(date_col)[col].transform(lambda s: s.std(ddof=0))
-        result[col] = (result[col] - mean) / std.replace(0, pd.NA)
-        result[col] = result[col].fillna(0.0)
+        raw = result[col]
+        mean = raw.groupby(result[date_col]).transform("mean")
+        std = raw.groupby(result[date_col]).transform(lambda s: s.std(ddof=0))
+        scaled = (raw - mean) / std.replace(0, pd.NA)
+        zero_dispersion = std.eq(0) & raw.notna()
+        result[col] = scaled.mask(zero_dispersion, 0.0)
 
     return result
 
@@ -89,29 +92,19 @@ def add_period_return(
     date_col: str = "date",
     col_name: str = "period_return",
 ) -> pd.DataFrame:
-    """Add return from each rebalance date to the next rebalance date."""
-    result = df.copy()
-    result[col_name] = pd.NA
-    rebalance_list = list(pd.to_datetime(rebalance_dates))
+    """Add the next-open holding-period return on each rebalance date.
 
-    for idx, start_date in enumerate(rebalance_list[:-1]):
-        end_date = rebalance_list[idx + 1]
-        start_rows = (
-            result[result[date_col] == start_date]
-            .drop_duplicates(subset=[symbol_col])
-            .set_index(symbol_col)[price_col]
-        )
-        end_rows = (
-            result[result[date_col] == end_date]
-            .drop_duplicates(subset=[symbol_col])
-            .set_index(symbol_col)[price_col]
-        )
-        common = start_rows.index.intersection(end_rows.index)
-        period_ret = (end_rows.loc[common] / start_rows.loc[common]) - 1
-        mask = (result[date_col] == start_date) & (result[symbol_col].isin(common))
-        result.loc[mask, col_name] = result.loc[mask, symbol_col].map(period_ret)
-
-    return result
+    ``price_col`` is retained for callers that still pass it. The fill price is
+    the next session open, after limit-up, limit-down and halt checks.
+    """
+    del price_col
+    return assign_executable_period_returns(
+        df,
+        rebalance_dates,
+        symbol_col=symbol_col,
+        date_col=date_col,
+        col_name=col_name,
+    )
 
 
 def prepare_factor_panel(config: AppConfig, raw_df: pd.DataFrame) -> pd.DataFrame:
@@ -134,6 +127,18 @@ def prepare_factor_panel(config: AppConfig, raw_df: pd.DataFrame) -> pd.DataFram
         factor_cols,
         method=config.preprocess.standardize,
     )
+    missing = [col for col in config.factors if col not in panel.columns]
+    if missing:
+        raise ValueError(
+            "Configured factors are missing from the panel: " + ", ".join(missing)
+        )
+    empty = [col for col in factor_cols if panel[col].isna().all()]
+    if empty:
+        raise ValueError(
+            "Configured factors are entirely missing: "
+            + ", ".join(empty)
+            + ". Missing factor values stay missing and are left out of the composite."
+        )
     panel = add_forward_return(panel, config.forward_return_days)
 
     if config.holding_period == "rebalance":

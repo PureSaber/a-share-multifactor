@@ -7,6 +7,9 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from quant_data_kit import AssetClass, BarEvent, FixedPoint
 from quant_execution import BarMatchingModel, OrderType, RuleBookRiskGate, Side
 
+from a_share_multifactor.config import CostsConfig
+from a_share_multifactor.trading_costs import stamp_duty_rate
+
 
 def decimal(value: FixedPoint) -> Decimal:
     return Decimal(value.units).scaleb(-value.scale)
@@ -41,7 +44,19 @@ class ConfiguredAShareRiskGate(RuleBookRiskGate):
         prior = self._commission_notionals.get(order.order_id, Decimal(0))
         paid = max(prior * rate, floor) if prior else Decimal(0)
         commission = max((prior + notional) * rate, floor) - paid
-        stamp = Decimal(spec.metadata["stamp_duty_rate"]) if fill.side is Side.SELL else Decimal(0)
+        stamp = Decimal(0)
+        if fill.side is Side.SELL and spec.asset_class is AssetClass.EQUITY:
+            if spec.metadata.get("statutory_stamp_tax") == "true":
+                duty = stamp_duty_rate(
+                    CostsConfig(
+                        statutory_stamp_tax=True,
+                        stamp_tax=float(spec.metadata["stamp_duty_rate"]),
+                    ),
+                    fill.event_time,
+                )
+                stamp = Decimal(str(duty))
+            else:
+                stamp = Decimal(spec.metadata["stamp_duty_rate"])
         return commission / notional + stamp
 
     def fee_for(self, fill, order):
