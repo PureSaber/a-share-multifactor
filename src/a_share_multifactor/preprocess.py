@@ -107,8 +107,8 @@ def add_period_return(
     )
 
 
-def prepare_factor_panel(config: AppConfig, raw_df: pd.DataFrame) -> pd.DataFrame:
-    """Compute factors, apply directions, preprocess, and add return columns."""
+def prepare_factor_inputs(config: AppConfig, raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Compute and validate factor inputs without scoring or future-return labels."""
     panel = compute_factors(raw_df, factor_names=config.factors)
     factor_cols = [col for col in config.factors if col in panel.columns]
 
@@ -139,6 +139,12 @@ def prepare_factor_panel(config: AppConfig, raw_df: pd.DataFrame) -> pd.DataFram
             + ", ".join(empty)
             + ". Missing factor values stay missing and are left out of the composite."
         )
+    return panel
+
+
+def prepare_factor_panel(config: AppConfig, raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Compute factors, apply directions, preprocess, and add return columns."""
+    panel = prepare_factor_inputs(config, raw_df)
     panel = add_forward_return(panel, config.forward_return_days)
 
     if config.holding_period == "rebalance":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -289,12 +290,24 @@ def build_dataset(
     force_refresh: bool = False,
     include_alt: bool = True,
     allow_incomplete_universe: bool = False,
+    *,
+    read_only: bool = False,
 ) -> pd.DataFrame:
     """Load cached Parquet or fetch from AKShare, then merge and slice."""
     root = data_dir or Path("./data")
     price_path = root / config.data.price
     fundamentals_path = root / config.data.fundamentals
     universe_path = root / config.data.universe
+
+    if read_only:
+        if force_refresh:
+            raise ValueError("Read-only data loading cannot refresh sources")
+        required = [price_path, fundamentals_path]
+        if config.filters.use_historical_universe:
+            required.append(universe_path)
+        for path in required:
+            if not path.is_file():
+                raise ValueError(f"Read-only data loading requires an existing file: {path}")
 
     universe = pd.DataFrame()
     if config.filters.use_historical_universe:
@@ -364,6 +377,12 @@ def build_dataset(
     if include_alt:
         panel = _merge_alt_data(panel, config, root)
 
+    result = panel.reset_index(drop=True)
+    result.attrs["data_quality"] = price_quality
+    if read_only:
+        result.attrs["read_only"] = True
+        return result
+
     snapshot_root = root / config.data.snapshot_root
     price_snapshot = create_snapshot(
         prices,
@@ -392,14 +411,12 @@ def build_dataset(
             as_of=config.end_date,
             query={"start_date": config.start_date, "end_date": config.end_date},
         )
-    result = panel.reset_index(drop=True)
     result.attrs["dataset_snapshots"] = {
         "prices": price_snapshot.snapshot_id,
         "fundamentals": fundamental_snapshot.snapshot_id,
     }
     if universe_snapshot is not None:
         result.attrs["dataset_snapshots"]["universe"] = universe_snapshot.snapshot_id
-    result.attrs["data_quality"] = price_quality
     return result
 
 
@@ -469,11 +486,16 @@ def load_benchmark_returns(
     config: AppConfig,
     data_dir: Path | None = None,
     force_refresh: bool = False,
+    *,
+    read_only: bool = False,
 ) -> pd.Series:
     from a_share_multifactor.calendar import rebalance_dates
 
     root = data_dir or Path("./data")
     benchmark_path = root / config.data.benchmark
+
+    if read_only and (force_refresh or not benchmark_path.is_file()):
+        raise ValueError(f"Read-only benchmark loading requires an existing file: {benchmark_path}")
 
     if force_refresh or not benchmark_path.exists():
         benchmark = fetch_hs300_benchmark(config.start_date, config.end_date)
@@ -482,8 +504,17 @@ def load_benchmark_returns(
         benchmark = load_parquet(benchmark_path)
     _require_total_return_benchmark(benchmark)
 
+    benchmark = benchmark.copy()
+    benchmark["date"] = pd.to_datetime(benchmark["date"], errors="coerce")
+    benchmark["benchmark_return"] = pd.to_numeric(benchmark["benchmark_return"], errors="coerce")
+    if benchmark["date"].isna().any() or benchmark["date"].duplicated().any():
+        raise ValueError("Benchmark dates must be valid and unique")
+    values = benchmark["benchmark_return"]
+    if not values.map(lambda value: pd.notna(value) and math.isfinite(float(value))).all():
+        raise ValueError("Benchmark returns must be finite")
+    if (values < -1).any():
+        raise ValueError("Benchmark returns cannot be below -100%")
     daily = benchmark.set_index("date")["benchmark_return"].sort_index()
-    daily = daily[~daily.index.duplicated(keep="last")]
     rebalance_idx = rebalance_dates(pd.Series(daily.index), config.rebalance_freq)
 
     period_returns: dict[pd.Timestamp, float] = {}
