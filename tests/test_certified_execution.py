@@ -77,6 +77,39 @@ def test_instrument_master_uses_stock_and_etf_contracts() -> None:
     assert all(mapping.source == "fixture-certified" for mapping in mappings)
 
 
+@pytest.mark.parametrize(
+    ("effective_from", "effective_to", "valid"),
+    [
+        ("2020-01-02T01:30:00Z", "2020-01-02T14:14:38Z", True),
+        ("2020-01-02T09:30:00+08:00", "2020-01-02T15:00:00.000002+08:00", True),
+        ("2020-01-02T01:30:00.000001Z", "2020-01-03T14:14:38Z", False),
+        ("2020-01-02T01:30:00Z", "2020-01-02T07:00:00Z", False),
+        ("2020-01-02T01:30:00Z", "2020-01-02T07:00:00.000001Z", False),
+        ("2020-01-02T01:30:00Z", "2020-01-02T06:59:59Z", False),
+    ],
+)
+def test_instrument_validity_covers_actual_bar_window(
+    tmp_path, effective_from, effective_to, valid
+):
+    # Two symbols exercise the deterministic event sequence's microsecond offset.
+    panel = _certified_panel().head(2).iloc[::-1]
+    catalog = load_fixture_catalog()
+    catalog["effective_from"] = effective_from
+    catalog["effective_to"] = effective_to
+    path = tmp_path / "catalog.csv"
+    catalog.to_csv(path, index=False)
+    if not valid:
+        with pytest.raises(ValueError, match="outside fixture validity"):
+            build_instrument_master(panel, catalog_path=path)
+        return
+    specs, mappings = build_instrument_master(panel, catalog_path=path)
+    events = _build_events(panel, specs)
+    assert len(events) == len(mappings) == 2
+    for event in events:
+        spec = specs[event.instrument_id]
+        assert spec.effective_from <= event.bar_start < event.bar_end < spec.effective_to
+
+
 def test_unknown_master_fees_remain_unknown_and_replay_uses_explicit_costs(tmp_path):
     catalog = load_fixture_catalog()
     catalog["commission_rate"] = ""

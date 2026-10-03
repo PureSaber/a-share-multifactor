@@ -320,6 +320,13 @@ def load_fixture_catalog(path: Path = _CATALOG_PATH) -> pd.DataFrame:
     return catalog
 
 
+def _daily_bar_window(value: object, sequence: int) -> tuple[pd.Timestamp, pd.Timestamp]:
+    day = pd.Timestamp(value).date()
+    start = _utc(day) + pd.Timedelta(hours=1, minutes=30)
+    end = _utc(day) + pd.Timedelta(hours=7, microseconds=sequence)
+    return start, end
+
+
 def build_instrument_master(
     panel: pd.DataFrame,
     *,
@@ -336,14 +343,20 @@ def build_instrument_master(
         )
     specs: dict[str, InstrumentSpec] = {}
     mappings: list[SymbolMapping] = []
+    ordered = panel.sort_values(["date", "symbol"]).reset_index(drop=True)
     for symbol in symbols:
         row = catalog.loc[symbol]
         effective_from = _utc(row["effective_from"]).to_pydatetime()
         effective_to = _utc(row["effective_to"]).to_pydatetime()
-        symbol_dates = pd.to_datetime(panel.loc[panel["symbol"].astype(str).eq(symbol), "date"])
-        if not symbol_dates.empty and (
-            symbol_dates.min().date() < effective_from.date()
-            or symbol_dates.max().date() >= effective_to.date()
+        windows = [
+            _daily_bar_window(value, int(index))
+            for index, value in ordered.loc[
+                ordered["symbol"].astype(str).eq(symbol), "date"
+            ].items()
+        ]
+        if windows and (
+            min(start for start, _ in windows) < effective_from
+            or max(end for _, end in windows) >= effective_to
         ):
             raise ValueError(f"panel dates for {symbol} fall outside fixture validity window")
         price_scale = int(row["price_scale"])
@@ -399,8 +412,7 @@ def _build_events(panel: pd.DataFrame, specs: dict[str, InstrumentSpec]) -> tupl
         symbol = str(row["symbol"])
         scale = specs[symbol].price_tick.scale
         day = pd.Timestamp(row["date"]).date()
-        timestamp = _utc(day) + pd.Timedelta(hours=1, minutes=30)
-        bar_end = _utc(day) + pd.Timedelta(hours=7, microseconds=int(index))
+        timestamp, bar_end = _daily_bar_window(row["date"], int(index))
         volume = max(0, int(Decimal(str(row.get("volume", 0))).to_integral_value()))
         events.append(
             BarEvent(
