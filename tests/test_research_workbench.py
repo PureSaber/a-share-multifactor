@@ -92,8 +92,9 @@ def test_candidate_ledgers_cost_stress_and_data_cache(recipe, tmp_path):
     json.dumps(base, allow_nan=False)
 
 
-def test_factor_risk_reaches_optimizer_and_blocks_tracking_error(recipe, tmp_path):
-    recipe["allocation"] = {"mode": "cost_aware", "max_turnover": 2.0}
+@pytest.mark.parametrize("allocation_mode", ["cost_aware", "equal"])
+def test_factor_risk_reaches_optimizer_and_blocks_tracking_error(recipe, tmp_path, allocation_mode):
+    recipe["allocation"] = {"mode": allocation_mode, "max_turnover": 2.0}
     recipe["risk_model"] = {
         "model_kind": "statistical_proxy",
         "lookback": 30,
@@ -163,6 +164,39 @@ def test_pit_industry_caps_change_allocation_and_neutralization_changes_scores(r
     assert actual.momentum.tolist() == [-1, 1, -2, 2]
     with pytest.raises(ValueError, match="PIT"):
         neutralize_signals(panel.drop(columns="industry"), ["momentum"], ["industry"])
+
+
+def test_equal_pit_industry_cap_reaches_the_real_allocation_and_ledger(recipe, tmp_path):
+    freeze_history(
+        recipe,
+        tmp_path,
+        domain="classification",
+        field="industry",
+        values={"000001": "bank", "000333": "consumer", "600036": "bank", "601318": "insurance"},
+    )
+    recipe["required_history"] = {"industry": "classification"}
+    recipe["allocation"] = {"mode": "equal", "max_turnover": 2.0}
+    recipe["strategy"].update(top_n=4, max_weight=0.4)
+    recipe["risk"] = {
+        "max_industry_weight": 0.2,
+        "industry_field": "industry",
+        "exposure_breach_action": "liquidate",
+    }
+    root = tmp_path / "equal-industry"
+    result = execute(EquityResearchExecutor(), recipe, candidates(recipe)[0], root)
+    assert result["metrics"]["fills"] > 0
+    evidence = json.loads((root / "execution_diagnostics.json").read_text())
+    assert evidence["allocation_decisions"]
+    for decision in evidence["allocation_decisions"]:
+        weights = decision["weights"]
+        assert decision["mode"] == "equal"
+        assert sum(weights.values()) == pytest.approx(0.5, abs=1e-9)
+        assert weights.get("000001", 0) + weights.get("600036", 0) <= 0.2 + 1e-9
+        assert max(weights.values()) <= 0.2 + 1e-9
+    assert not any(
+        row["has_critical"] for row in evidence["risk_checks"] if row.get("stage") == "target"
+    )
+    assert load_and_validate_standard_run(root).profile == "backtest-ledger"
 
 
 def test_delayed_signal_and_unknown_factor(recipe, tmp_path):
