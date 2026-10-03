@@ -1,9 +1,11 @@
+import json
 from copy import deepcopy
 
 import pandas as pd
 import pytest
-from quant_lab.counterfactuals import intervention_plan
-from quant_lab.research import candidates
+from quant_lab import load_and_validate_standard_run
+from quant_lab.counterfactuals import intervention_plan, validate_plan
+from quant_lab.research import candidates, digest, file_hash
 from test_research_workbench import recipe as recipe_fixture
 
 from a_share_multifactor.paired_research import run_paired
@@ -61,3 +63,96 @@ def test_failures_are_retained_and_disable_attribution(recipe, tmp_path):
     result = run_paired(recipe, plan_for(recipe), tmp_path / "failed", executor=fail)
     assert not result["available"] and len(result["attempts"]) == 9
     assert all(row["status"] == "failed" for row in result["attempts"])
+
+
+def risk_plan(recipe):
+    recipe["allocation"] = {"mode": "cost_aware", "max_turnover": 2.0}
+    recipe["risk_model"] = {
+        "model_kind": "statistical_proxy",
+        "lookback": 30,
+        "factor_bounds": {"market": [0, 0.6]},
+        "benchmark_weights": {"000001": 0.25, "000333": 0.25, "600036": 0.25, "601318": 0.25},
+        "active_factor_bounds": {"market": [-0.6, 0.0]},
+        "max_tracking_error": 1.0,
+    }
+    original = plan_for(recipe)
+    base = {**original["base"], "risk_model": deepcopy(recipe["risk_model"])}
+    passive = {
+        **original["benchmarks"]["passive"],
+        "risk_model": None,
+        "allocation": {"mode": "equal"},
+    }
+    constrained = {
+        **original["benchmarks"]["same_risk_constrained"],
+        "risk_model": deepcopy(recipe["risk_model"]),
+    }
+    return intervention_plan(
+        base,
+        {
+            "signal": {"momentum_20d": -1},
+            "allocation": {"mode": "equal", "max_turnover": 2.0},
+            "risk_latch": {},
+            "frequency": "daily",
+            "fees": 0,
+            "delay": 1,
+        },
+        benchmarks={
+            "passive": passive,
+            "same_risk_constrained": constrained,
+            "cash": {"mode": "cash", "daily_return": 0},
+        },
+    )
+
+
+def test_paired_equal_retains_risk_but_passive_explicitly_removes_model(recipe, tmp_path):
+    plan = risk_plan(recipe)
+    original = deepcopy(recipe)
+    root = tmp_path / "risk-paired"
+    report = run_paired(recipe, plan, root)
+    assert report["available"], report
+    assert recipe == original
+    for attempt in report["attempts"]:
+        run = root / attempt["name"]
+        definition = run / "execution-definition.json"
+        assert file_hash(definition) == attempt["definition_sha256"]
+        resolved = json.loads(definition.read_text())
+        if attempt["name"] == "passive":
+            assert "risk_model" not in resolved["recipe"]
+            assert resolved["recipe"]["risk"] == {}
+            assert not (run / "risk_models.json").exists()
+        else:
+            assert resolved["recipe"]["risk_model"] == recipe["risk_model"]
+            assert (run / "risk_models.json").exists()
+        assert load_and_validate_standard_run(run).profile == "backtest-ledger"
+    equal_result = json.loads((root / "allocation/result.json").read_text())
+    assert equal_result["metrics"]["fills"] > 0
+    definitions = json.loads((root / "preregistration.json").read_text())
+    assert definitions["plan"] == plan
+
+
+def test_single_dimension_intervention_cannot_also_remove_risk_model(recipe):
+    plan = risk_plan(recipe)
+    plan["variants"]["allocation"]["risk_model"] = None
+    plan["sha256"] = digest({key: value for key, value in plan.items() if key != "sha256"})
+    with pytest.raises(ValueError, match="only one declared dimension"):
+        validate_plan(plan)
+
+
+def test_empty_model_override_is_not_treated_as_disabling_risk(recipe, tmp_path):
+    plan = plan_for(recipe)
+    plan["benchmarks"]["passive"]["risk_model"] = {}
+    plan["sha256"] = digest({key: value for key, value in plan.items() if key != "sha256"})
+    calls = []
+
+    def executor(spec, candidate, out):
+        calls.append(candidate["name"])
+        pd.DataFrame(
+            {"return": [0.01, -0.01]}, index=pd.date_range("2025-01-01", periods=2)
+        ).to_csv(out / "returns.csv")
+        return {}
+
+    report = run_paired(recipe, plan, tmp_path / "invalid", executor=executor)
+    assert not report["available"]
+    assert "passive" not in calls
+    failure = next(item for item in report["attempts"] if item["name"] == "passive")
+    assert failure["status"] == "failed" and "model_kind" in failure["error"]

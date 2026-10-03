@@ -14,8 +14,10 @@ from a_share_multifactor.research_workbench import EquityResearchExecutor
 def run_paired(recipe, plan, output: Path, *, executor=None):
     """No auto-selection, live orders or changed production risk configuration.
 
-    Non-cash definitions are full candidate dictionaries plus an optional risk
-    subtree. Cash is explicitly zero-interest native cash, not a Treasury proxy.
+    Non-cash definitions are full candidate dictionaries plus optional risk and
+    risk_model subtrees. An omitted risk_model inherits the recipe; explicit null
+    removes it. Each resolved definition is saved before execution. Cash is
+    explicitly zero-interest native cash, not a Treasury proxy.
     The supplied snapshot and recipe are frozen before the first execution.
     """
     validate_recipe(recipe)
@@ -42,10 +44,17 @@ def run_paired(recipe, plan, output: Path, *, executor=None):
         try:
             spec = deepcopy(recipe)
             spec["risk"] = deepcopy(request.get("risk", recipe.get("risk", {})))
+            if "risk_model" in request:
+                if request["risk_model"] is None:
+                    spec.pop("risk_model", None)
+                else:
+                    spec["risk_model"] = deepcopy(request["risk_model"])
             candidate = deepcopy(request)
             candidate.pop("risk", None)
+            candidate.pop("risk_model", None)
             if set(candidate) - (VARIANT_FIELDS | {"candidate_id"}):
                 raise ValueError("unknown paired candidate fields")
+            candidate.pop("candidate_id", None)
             candidate["name"] = name
             candidate["candidate_id"] = digest(candidate)[:20]
             # Validate each changed allocation/frequency/risk using the same
@@ -56,6 +65,10 @@ def run_paired(recipe, plan, output: Path, *, executor=None):
                 {k: candidate[k] for k in ("factors", "strategy", "allocation") if k in candidate}
             )
             validate_recipe(checked)
+            definition = out / "execution-definition.json"
+            definition.write_text(
+                canonical({"recipe": spec, "candidate": candidate}), encoding="utf-8"
+            )
             result = executor(spec, candidate, out)
             result["artifacts"] = {
                 str(p.relative_to(out)).replace("\\", "/"): file_hash(p)
@@ -72,6 +85,7 @@ def run_paired(recipe, plan, output: Path, *, executor=None):
                     "name": name,
                     "status": "completed",
                     "result_sha256": file_hash(out / "result.json"),
+                    "definition_sha256": file_hash(definition),
                 }
             )
         except Exception as exc:

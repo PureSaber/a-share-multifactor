@@ -23,6 +23,19 @@ A 股多因子选股研究项目：从 AKShare 拉取行情，计算因子，做
 预检保留输入哈希和实际观察区间，但不锁定输入，不证明完整历史市场状态、独立PIT版本或投资适用性；
 正式执行仍重新校验。数据加载API的`read_only=True`也禁止刷新和快照创建。
 
+## 配对反事实研究
+
+`a_share_multifactor.paired_research.run_paired`在独立输出目录冻结配方、输入清单哈希与
+单维干预计划，再逐项运行真实模拟账本。非现金定义可以声明`risk`和`risk_model`：
+省略风险模型表示继承配方，显式`risk_model: null`表示移除模型，空字典属于无效模型。
+被动基准因此可以明确移除模型，同风险基准和单维干预继续保留原模型。
+每次执行前保存`execution-definition.json`，其哈希进入尝试回执；失败仍保留且令归因不可用。
+
+等权分配可以保留因子与历史行业约束，目标是距离等权最近的可行组合；预算、单标的上限、
+换手及被移除持仓的卖出共同受限，跟踪误差仍由原风险门禁检查。费用干预的
+`cost_multiplier`同时作用于佣金、最低佣金、税费与成交滑点，不能解读为仅佣金效应。
+这些结果是模型内反事实；剩余项包含未解释因素与交互，不能宣称因果识别或替换冻结前向参数。
+
 ## 技术栈
 
 Python · Pandas · Scikit-learn · [**quant-data-kit**](https://github.com/PureSaber/quant-data-kit) · AKShare · PyArrow · Matplotlib

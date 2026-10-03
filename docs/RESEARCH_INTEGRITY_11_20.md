@@ -26,7 +26,9 @@ from a_share_multifactor.paired_research import run_paired
 recipe = load_recipe(Path("recipe.yaml"))  # one fixed equity interval, no validation wrapper
 base = candidates(recipe)[0]
 base["risk"] = recipe.get("risk", {})
-passive = {**deepcopy(base), "risk": {}, "strategy": {
+base["risk_model"] = deepcopy(recipe.get("risk_model"))
+passive = {**deepcopy(base), "risk": {}, "risk_model": None,
+    "allocation": {"mode": "equal", "max_turnover": 2}, "strategy": {
     **base["strategy"], "family": "buy_hold", "cash_buffer": 0, "max_weight": 1}}
 constrained = {**deepcopy(base), "strategy": {**base["strategy"], "family": "buy_hold"}}
 plan = intervention_plan(base, {"fees": 0, "delay": 1}, benchmarks={
@@ -43,8 +45,16 @@ passive is an unhedged buy-and-hold portfolio under the supplied market/executio
 same-risk preserves the original position/cash/risk constraints; cash has zero interest in
 native currency. All use the same interval and data. Costs remain realistic except in the
 explicit fee counterfactual. A passive portfolio is not guaranteed to be a licensed index.
+An omitted `risk_model` inherits the recipe; an explicit null removes it. Empty
+model mappings are invalid. Equal allocation retains absolute factor and PIT
+industry bounds through joint projection; the original tracking-error gate still
+runs. A variant cannot change its risk model while changing another dimension.
+The cost multiplier scales commission, minimum commission, tax and fill-price
+slippage together; it does not isolate commission alone.
 
-`preregistration.json` is written before execution. Every attempt and failed replay is kept;
+`preregistration.json` is written before execution. Each resolved recipe/candidate
+pair is saved in `execution-definition.json` and hashed in its successful attempt.
+Every attempt and failed replay is kept;
 any failure/gap disables attribution. `paired-evidence.json` reconciles the benchmark return
 gap to six optional one-at-a-time effects plus an unexplained/interaction residual. It cannot
 establish causality or justify weakening real risk limits. `net_returns.csv` and per-run byte
