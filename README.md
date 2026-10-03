@@ -36,6 +36,12 @@ A 股多因子选股研究项目：从 AKShare 拉取行情，计算因子，做
 `cost_multiplier`同时作用于佣金、最低佣金、税费与成交滑点，不能解读为仅佣金效应。
 这些结果是模型内反事实；剩余项包含未解释因素与交互，不能宣称因果识别或替换冻结前向参数。
 
+现金与趋势可以分别以`cash_buffer`和`trend_filter`维度预登记。前者仅改变现金缓冲，
+不修改持仓数量、单只上限或风险模型；后者仅在`etf_trend`与`rank`之间切换，保留
+原排序分数和调仓日期。现金缓冲下降后，其他仓位上限仍可能限制投入；应检查实际
+分配和账本，不能将配置值变化直接换算成现金机会成本。多个情景须使用独立研究ID，
+在运行前固定，并保留所有结果而非按收益选取。
+
 ## 技术栈
 
 Python · Pandas · Scikit-learn · [**quant-data-kit**](https://github.com/PureSaber/quant-data-kit) · AKShare · PyArrow · Matplotlib
