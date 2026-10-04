@@ -474,12 +474,20 @@ def fetch_hs300_benchmark(
 
 
 def _require_total_return_benchmark(benchmark: pd.DataFrame) -> None:
-    kind = benchmark["benchmark_kind"] if "benchmark_kind" in benchmark.columns else pd.Series(dtype=object)
-    if kind.empty or not kind.eq("total_return").all():
-        raise ValueError(
-            "Benchmark cache is not the CSI 300 total-return index H00300. "
-            "Delete it and refetch. The price index sh000300 omits dividends."
-        )
+    for column, expected in (
+        ("benchmark_kind", "total_return"),
+        ("benchmark_symbol", "H00300"),
+    ):
+        if (
+            benchmark.empty
+            or column not in benchmark
+            or not benchmark[column].eq(expected).fillna(False).all()
+        ):
+            raise ValueError(
+                "Benchmark cache is not identified as the CSI 300 total-return index H00300: "
+                f"every row must have {column}={expected}. "
+                "Provide a source-verified cache; the price index sh000300 omits dividends."
+            )
 
 
 def load_benchmark_returns(

@@ -84,7 +84,7 @@ python -m a_share_multifactor.preflight --config configs/default.yaml --data-dir
 |`date`|date/datetime|交易日|
 |`benchmark_return`|number|日全收益率，使用比例值；日期须唯一、收益须有限且不低于−1|
 |`benchmark_kind`|string|`total_return`；当前加载器要求所有行均有此标记|
-|`benchmark_symbol`|string|提供方记录`H00300`，用于识别来源指数|
+|`benchmark_symbol`|string|每行必须明确为`H00300`；缺列、空值、混合或其他指数均拒绝|
 
 价格指数`sh000300`不包含分红，不能作为H00300的替代品。
 预检还检查调仓持有期的基准对齐。身份标记和预检成功不替代来源核验，

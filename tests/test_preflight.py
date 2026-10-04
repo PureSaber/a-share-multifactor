@@ -36,7 +36,12 @@ def cached_case(root):
     )
     universe = prices[["symbol", "date"]].assign(in_universe=1)
     benchmark = pd.DataFrame(
-        {"date": dates, "benchmark_return": 0.001, "benchmark_kind": "total_return"}
+        {
+            "date": dates,
+            "benchmark_return": 0.001,
+            "benchmark_kind": "total_return",
+            "benchmark_symbol": "H00300",
+        }
     )
     for name, frame in [
         ("prices", prices),
@@ -201,6 +206,34 @@ def test_preflight_requires_usable_benchmark_in_research_window(tmp_path, bad):
     with pytest.raises(ValueError, match="Benchmark"):
         inspect_inputs(config, tmp_path)
     assert snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "bad_identity",
+    ["other", "mixed", "missing", "null", "empty", "nullable_symbol", "nullable_kind"],
+)
+def test_preflight_requires_identified_h00300_without_mutating_cache(tmp_path, bad_identity):
+    config, _ = cached_case(tmp_path)
+    path = tmp_path / "benchmark.parquet"
+    frame = pd.read_parquet(path)
+    if bad_identity == "missing":
+        frame = frame.drop(columns=["benchmark_symbol"])
+    elif bad_identity in {"nullable_symbol", "nullable_kind"}:
+        column = "benchmark_symbol" if bad_identity == "nullable_symbol" else "benchmark_kind"
+        frame[column] = frame[column].astype("string")
+        frame.loc[frame.index[-1], column] = pd.NA
+    elif bad_identity == "mixed":
+        frame.loc[frame.index[-1], "benchmark_symbol"] = "OTHER_INDEX"
+    else:
+        frame["benchmark_symbol"] = {"other": "OTHER_INDEX", "null": None, "empty": ""}[
+            bad_identity
+        ]
+    frame.to_parquet(path, index=False)
+    before = snapshot(tmp_path)
+    with pytest.raises(ValueError, match="H00300"):
+        inspect_inputs(config, tmp_path)
+    assert snapshot(tmp_path) == before
+    assert not (tmp_path / "snapshots").exists() and not (tmp_path / "outputs").exists()
 
 
 def test_preflight_detects_input_change(tmp_path, monkeypatch):
