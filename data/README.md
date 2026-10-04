@@ -12,7 +12,7 @@
 python -m a_share_multifactor.preflight --config configs/default.yaml --data-dir data
 ```
 
-使用四类因子时，将配置换成`configs/four_factors.yaml`。Studio使用其保存的配置，
+使用四类因子时，将配置换成`configs/run_four_factors.yaml`。Studio使用其保存的配置，
 应检查相同配置所声明的时间窗口、因子和路径，不能用另一个配置的成功预检代替。
 预检只读取已有文件，检查历史成员、基本面可得时点、因子可计算性和全收益基准；
 不下载、不创建快照、不计算回测、不写策略结果。
@@ -101,7 +101,7 @@ python -m a_share_multifactor.fetch_data --config configs/default.yaml --data-di
 四类因子配置还使用扩展输入：
 
 ```bash
-python -m a_share_multifactor.fetch_data --config configs/four_factors.yaml --data-dir data --fetch-alt
+python -m a_share_multifactor.fetch_data --config configs/run_four_factors.yaml --data-dir data --fetch-alt
 ```
 
 这些命令会联网并写缓存，末尾的数据集构建还可能生成快照；默认配置范围不是小样本。
