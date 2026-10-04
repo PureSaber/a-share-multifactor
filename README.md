@@ -13,11 +13,13 @@ A 股多因子选股研究项目：从 AKShare 拉取行情，计算因子，做
 
 ## 本地数据只读预检
 
-运行`python -m a_share_multifactor.preflight --config configs/four_factors.yaml --data-dir data --symbols-limit 50`
+运行`python -m a_share_multifactor.preflight --config configs/run_four_factors.yaml --data-dir data --symbols-limit 50`
 会沿分层研究实际使用的加载路径，检查缓存行情、历史股票池、基本面可得时点、因子可计算性和全收益基准，
 输出`asm.quantile-preflight/v1`JSON。请将配置路径替换为自己的已有配置。
 它不下载缺失数据、不发布快照、不计算综合得分或回测、不创建结果目录。
 缺少必需输入、未来基本面导致因子完全缺失、历史成员缺价或基准口径错误均明确失败。
+
+所需文件、`available_at`时点规则、历史成员覆盖和H00300基准字段见[缓存准备与字段约定](data/README.md)。
 
 `--dry-run`仍会计算完整回测，仅跳过结果写出，不能替代上述只读预检。
 预检保留输入哈希和实际观察区间，但不锁定输入，不证明完整历史市场状态、独立PIT版本或投资适用性；
