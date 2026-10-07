@@ -71,6 +71,11 @@ python -m a_share_multifactor.preflight --config configs/default.yaml --data-dir
 或任意固定滞后直接当成历史已知事实。行情文件内嵌的基本面值也不会覆盖发布记录的PIT选择。
 关闭PIT改为同日连接是另一种研究假设，不能用于声称已通过历史可得性验收。
 
+当前默认AKShare`stock_value_em`来源不提供历史`available_at`，QDK采集器将其保留为未知，
+不会把估值日期改成发布时间。2026-10-07单股真实来源检查的21条记录均没有可得时点。
+因此，运行下面的采集命令取得历史估值后，默认PIT预检仍可能拒绝这些记录；
+完整真实验收需要另有实际披露/获知时间的输入，不能只靠重复下载或固定滞后来补齐。
+
 ## 历史股票池与基准
 
 历史股票池至少含`symbol`、`date`和`in_universe`，其中`in_universe=1`表示当天属于股票池。
