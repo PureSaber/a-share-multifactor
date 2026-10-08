@@ -289,3 +289,6 @@ Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%�
 本地联合开发版本已增加真实公开数据到模拟决策卡的入口，详见
 [研究可信度与决策工作流](docs/research-decision-workflow.md)。需要同时安装修订后的
 `quant-data-kit` 与 `quant-lab`；冻结发布标签尚不包含这些变更。
+# 披露证据接入
+
+`asm-disclosures`支持带原文件摘要、单位和修订链的基本面导入，默认按实际采集时点准入。研究工作台会复核来源材料与派生历史；输入和真实性边界见[披露接入说明](docs/DISCLOSURE_IMPORT.md)。

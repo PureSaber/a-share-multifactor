@@ -12,7 +12,6 @@ from quant_data_kit import StatusEvent
 from quant_data_kit.research_coverage import (
     asof_history,
     attach_history,
-    load_history,
     preflight,
 )
 from quant_execution import resolve_a_share_replay_status
@@ -29,6 +28,7 @@ from a_share_multifactor.calendar import rebalance_dates
 from a_share_multifactor.config import _dict_to_config
 from a_share_multifactor.corporate_actions import action_events
 from a_share_multifactor.decision_workflow import load_inputs, validate_inputs
+from a_share_multifactor.disclosures import load_research_history
 from a_share_multifactor.performance import return_statistics
 from a_share_multifactor.run_contract import (
     _replay,
@@ -392,7 +392,7 @@ def _prepare_research_inputs(
     )
     history = None
     if "history" in recipe["inputs"]:
-        _, history = load_history(Path(recipe["inputs"]["history"]))
+        _, history = load_research_history(Path(recipe["inputs"]["history"]))
     if execution is not None and history is None:
         raise ValueError("Historical execution requires an imported point-in-time history")
     required_history = recipe.get("required_history", {})
