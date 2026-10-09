@@ -131,6 +131,7 @@ class AppConfig:
     holding_period: str = "rebalance"
     forward_return_days: int = 20
     outputs_dir: str = "outputs"
+    instrument_catalog: str | None = None
     data: DataPaths = field(default_factory=DataPaths)
     filters: FilterConfig = field(default_factory=FilterConfig)
     preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
@@ -212,6 +213,7 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
         holding_period=raw.get("holding_period", defaults.holding_period),
         forward_return_days=int(raw.get("forward_return_days", defaults.forward_return_days)),
         outputs_dir=raw.get("outputs_dir", defaults.outputs_dir),
+        instrument_catalog=raw.get("instrument_catalog"),
         data=DataPaths(
             price=data_raw.get("price", defaults.data.price),
             fundamentals=data_raw.get("fundamentals", defaults.data.fundamentals),
@@ -354,4 +356,9 @@ def load_config(config_path: Path) -> AppConfig:
     """Load YAML config and return typed AppConfig with defaults applied."""
     with config_path.open(encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
-    return _dict_to_config(raw)
+    config = _dict_to_config(raw)
+    if config.instrument_catalog:
+        config.instrument_catalog = str(
+            (config_path.parent / config.instrument_catalog).resolve()
+        )
+    return config

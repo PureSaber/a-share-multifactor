@@ -17,6 +17,12 @@ from a_share_multifactor.config import load_config
 from a_share_multifactor.data_loader import build_dataset, load_benchmark_returns
 from a_share_multifactor.preprocess import prepare_factor_inputs
 from a_share_multifactor.quantile_backtest import align_benchmark_returns
+from a_share_multifactor.run_contract import (
+    _build_events,
+    build_instrument_master,
+    execution_catalog,
+    validate_execution_profile,
+)
 
 
 def _digest(path: Path) -> str:
@@ -35,6 +41,7 @@ def inspect_inputs(config_path: Path, data_dir: Path, symbols_limit: int = 0) ->
         for name, value in asdict(config.data).items()
         if name != "snapshot_root"
     }
+    paths["instrument_catalog"] = execution_catalog(config)
     identities = {name: _digest(path) for name, path in paths.items() if path.is_file()}
     panel = build_dataset(config, data_dir=data_dir, read_only=True)
     if symbols_limit > 0:
@@ -54,6 +61,11 @@ def inspect_inputs(config_path: Path, data_dir: Path, symbols_limit: int = 0) ->
     if periods.empty:
         raise ValueError("No complete holding period is available in the requested sample")
     benchmark = align_benchmark_returns(benchmark, periods)
+    validate_execution_profile(panel, config)
+    instruments, mappings = build_instrument_master(
+        panel, catalog_path=paths["instrument_catalog"]
+    )
+    bars = _build_events(panel, instruments)
     if _digest(config_path) != config_hash or identities != {
         name: _digest(path) for name, path in paths.items() if path.is_file()
     }:
@@ -64,7 +76,13 @@ def inspect_inputs(config_path: Path, data_dir: Path, symbols_limit: int = 0) ->
         "software_preflight": "pass",
         "read_only": True,
         "investable": False,
-        "scope": "cached_data_factor_inputs_and_benchmark",
+        "scope": "cached_data_factors_benchmark_and_execution_inputs",
+        "execution_rules": {
+            "symbols": len(instruments),
+            "mappings": len(mappings),
+            "bars": len(bars),
+            "catalog_scope": "declared-rules-not-exchange-history-certification",
+        },
         "symbols": int(panel["symbol"].nunique()),
         "rows": len(panel),
         "requested_window": {"start": config.start_date, "end": config.end_date},

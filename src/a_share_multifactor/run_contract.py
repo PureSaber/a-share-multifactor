@@ -999,6 +999,36 @@ def _frame(name: str, rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=_V2_COLUMNS[name])
 
 
+def execution_catalog(config: AppConfig) -> Path:
+    return Path(config.instrument_catalog) if config.instrument_catalog else _CATALOG_PATH
+
+
+def validate_execution_profile(panel: pd.DataFrame, config: AppConfig) -> None:
+    """Shared static guards, without creating an account or invoking a broker."""
+    import math
+
+    if config.costs.retail_mode:
+        raise ValueError(
+            "QExec replay does not support retail early-exit/min-holding rules; "
+            "use the explicit daily/weekly decision profile (retail_mode=false)"
+        )
+    if "adjustment" in panel and not panel["adjustment"].eq("none").all():
+        raise ValueError("Execution requires unadjusted traded prices (adjustment=none)")
+    costs = config.costs
+    values = (costs.commission, costs.min_commission, costs.stamp_tax, costs.slippage,
+              costs.cash_buffer, costs.max_position_weight, costs.initial_capital,
+              costs.participation_rate)
+    if (
+        not all(math.isfinite(value) for value in values)
+        or min(costs.commission, costs.min_commission, costs.stamp_tax, costs.slippage) < 0
+        or not 0 <= costs.cash_buffer < 1
+        or not 0 < costs.max_position_weight <= 1
+        or not 0 <= costs.participation_rate <= 1
+        or costs.initial_capital <= 0
+    ):
+        raise ValueError("Invalid execution costs or allocation limits")
+
+
 def _replay(
     scored_panel: pd.DataFrame,
     config: AppConfig,
@@ -1018,21 +1048,8 @@ def _replay(
 ) -> CertifiedReplay:
     if not account_id.strip() or not strategy_id.strip():
         raise ValueError("account_id and strategy_id must be non-empty")
-    if config.costs.retail_mode:
-        raise ValueError(
-            "QExec replay does not support retail early-exit/min-holding rules; "
-            "use the explicit daily/weekly decision profile (retail_mode=false)"
-        )
+    validate_execution_profile(scored_panel, config)
     costs = config.costs
-    if "adjustment" in scored_panel and not scored_panel["adjustment"].eq("none").all():
-        raise ValueError("Execution requires unadjusted traded prices (adjustment=none)")
-    if (
-        min(costs.commission, costs.min_commission, costs.stamp_tax) < 0
-        or not 0 <= costs.cash_buffer < 1
-        or not 0 < costs.max_position_weight <= 1
-        or costs.initial_capital <= 0
-    ):
-        raise ValueError("Invalid execution costs or allocation limits")
     replay_symbols = sorted(
         set(scored_panel["symbol"].astype(str)) | {event.instrument_id for event in status_events}
     )
@@ -1669,7 +1686,8 @@ def write_equity_standard_run(
 
     from a_share_multifactor.report import write_html_report
 
-    replay = _replay(scored_panel, config, run_dir.name)
+    catalog_path = execution_catalog(config)
+    replay = _replay(scored_panel, config, run_dir.name, catalog_path=catalog_path)
     research_metrics = {}
     for name in ("ic_summary", "ic_decay"):
         path = run_dir / f"{name}.csv"
@@ -1682,6 +1700,7 @@ def write_equity_standard_run(
         dataset_snapshots,
         replay=replay,
         research_metrics=research_metrics,
+        catalog_path=catalog_path,
     )
     canonical = replay_results(replay, config)
     results.__dict__.update(canonical.__dict__)
