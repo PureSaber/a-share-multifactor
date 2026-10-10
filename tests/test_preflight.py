@@ -103,11 +103,65 @@ def test_preflight_uses_native_loaders_without_fetch_snapshots_or_strategy(tmp_p
     assert evidence["symbols"] == 1 and evidence["rows"] == 30
     assert evidence["factor_non_null_rows"] == {"pe_ratio": 30}
     assert evidence["read_only"] is True and evidence["investable"] is False
-    assert len(evidence["input_files"]) == 4
+    assert len(evidence["input_files"]) == 5
+    assert evidence["execution_rules"]["symbols"] == 1
     assert snapshot(tmp_path) == before
     assert not (tmp_path / "snapshots").exists() and not (tmp_path / "outputs").exists()
     with pytest.raises(ValueError, match="cannot refresh"):
         build_dataset(cfg, tmp_path, force_refresh=True, read_only=True)
+
+
+def test_preflight_catches_missing_instrument_before_backtest(tmp_path):
+    config, _ = cached_case(tmp_path)
+    for name in ("prices", "fundamentals", "universe"):
+        path = tmp_path / f"{name}.parquet"
+        frame = pd.read_parquet(path)
+        frame["symbol"] = frame["symbol"].replace({"000002": "999999"})
+        frame.to_parquet(path, index=False)
+    before = snapshot(tmp_path)
+    with pytest.raises(ValueError, match="missing=.*999999"):
+        inspect_inputs(config, tmp_path)
+    assert snapshot(tmp_path) == before
+
+
+def test_explicit_catalog_and_date_validity_are_checked(tmp_path):
+    from a_share_multifactor.run_contract import _CATALOG_PATH
+
+    config, _ = cached_case(tmp_path)
+    catalog = pd.read_csv(_CATALOG_PATH, dtype=str)
+    path = tmp_path / "rules.csv"
+    catalog.to_csv(path, index=False)
+    raw = yaml.safe_load(config.read_text())
+    raw["instrument_catalog"] = path.name
+    config.write_text(yaml.safe_dump(raw))
+    evidence = inspect_inputs(config, tmp_path)
+    assert evidence["input_files"]["instrument_catalog"]["path"] == str(path.resolve())
+    catalog["effective_to"] = "2024-01-10T00:00:00Z"
+    catalog.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="validity"):
+        inspect_inputs(config, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("slippage", -0.01),
+        ("commission", float("nan")),
+        ("initial_capital", float("inf")),
+        ("participation_rate", 1.01),
+        ("cash_buffer", 1.0),
+        ("retail_mode", True),
+    ],
+)
+def test_preflight_rejects_invalid_execution_profile_without_writes(tmp_path, field, value):
+    config, _ = cached_case(tmp_path)
+    raw = yaml.safe_load(config.read_text())
+    raw["costs"][field] = value
+    config.write_text(yaml.safe_dump(raw))
+    before = snapshot(tmp_path)
+    with pytest.raises(ValueError, match="Invalid execution|does not support retail"):
+        inspect_inputs(config, tmp_path)
+    assert snapshot(tmp_path) == before
 
 
 @pytest.mark.parametrize("missing", ["prices", "fundamentals", "universe", "benchmark"])
