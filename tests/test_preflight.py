@@ -132,7 +132,7 @@ def test_explicit_catalog_and_date_validity_are_checked(tmp_path):
     path = tmp_path / "rules.csv"
     catalog.to_csv(path, index=False)
     raw = yaml.safe_load(config.read_text())
-    raw["instrument_catalog"] = str(path)
+    raw["instrument_catalog"] = path.name
     config.write_text(yaml.safe_dump(raw))
     evidence = inspect_inputs(config, tmp_path)
     assert evidence["input_files"]["instrument_catalog"]["path"] == str(path.resolve())
@@ -140,6 +140,28 @@ def test_explicit_catalog_and_date_validity_are_checked(tmp_path):
     catalog.to_csv(path, index=False)
     with pytest.raises(ValueError, match="validity"):
         inspect_inputs(config, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("slippage", -0.01),
+        ("commission", float("nan")),
+        ("initial_capital", float("inf")),
+        ("participation_rate", 1.01),
+        ("cash_buffer", 1.0),
+        ("retail_mode", True),
+    ],
+)
+def test_preflight_rejects_invalid_execution_profile_without_writes(tmp_path, field, value):
+    config, _ = cached_case(tmp_path)
+    raw = yaml.safe_load(config.read_text())
+    raw["costs"][field] = value
+    config.write_text(yaml.safe_dump(raw))
+    before = snapshot(tmp_path)
+    with pytest.raises(ValueError, match="Invalid execution|does not support retail"):
+        inspect_inputs(config, tmp_path)
+    assert snapshot(tmp_path) == before
 
 
 @pytest.mark.parametrize("missing", ["prices", "fundamentals", "universe", "benchmark"])

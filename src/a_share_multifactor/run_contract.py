@@ -1015,9 +1015,16 @@ def validate_execution_profile(panel: pd.DataFrame, config: AppConfig) -> None:
     if "adjustment" in panel and not panel["adjustment"].eq("none").all():
         raise ValueError("Execution requires unadjusted traded prices (adjustment=none)")
     costs = config.costs
-    values = (costs.commission, costs.min_commission, costs.stamp_tax, costs.slippage,
-              costs.cash_buffer, costs.max_position_weight, costs.initial_capital,
-              costs.participation_rate)
+    values = (
+        costs.commission,
+        costs.min_commission,
+        costs.stamp_tax,
+        costs.slippage,
+        costs.cash_buffer,
+        costs.max_position_weight,
+        costs.initial_capital,
+        costs.participation_rate,
+    )
     if (
         not all(math.isfinite(value) for value in values)
         or min(costs.commission, costs.min_commission, costs.stamp_tax, costs.slippage) < 0
