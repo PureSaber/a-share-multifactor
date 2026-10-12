@@ -121,7 +121,7 @@ pandas==2.3.3
     #   quant-risk-monitor
 pillow==12.3.0
     # via matplotlib
-pip-tools==7.6.1
+pip-tools==7.6.2
     # via a-share-multifactor (pyproject.toml)
 pluggy==1.6.0
     # via
