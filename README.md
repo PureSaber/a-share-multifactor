@@ -237,7 +237,7 @@ QExec 固定 `67164347c0a1fbb3e4f7a1b49ab9b172d02e86db`，统一公司行动、�
 这是一组开发版本依赖，不使用浮动分支；旧发布标签不修改。默认安装和 CI 均包含此次修复，
 不再依靠本地相邻仓库覆盖来通过测试。正式发布仍需完成对应仓库的发布流程。
 
-锁文件由规范环境Windows+Python3.10和固定`pip-tools==7.6.1`重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
+锁文件由规范环境Windows+Python3.10和固定`pip-tools==7.6.2`重建，覆盖runtime、dev和editable-build依赖；Jupyter等仅用于交互研究的
 Notebook工具不进入CI的dev闭包，需要时单独安装`.[notebook]`。并在Python3.10、3.11、3.12
 中严格按锁安装验证。AKShare 1.18.88的Linux元数据会同时安装两个相互覆盖的MiniRacer实现；
 本项目使用[可审计的metadata-only派生wheel](vendor/akshare/README.md)，包内全部运行代码、资源和
