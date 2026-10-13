@@ -167,7 +167,19 @@ def _prepare_rebalance_day(
     if day.empty:
         return day
     day["quantile"] = _assign_quantiles(day[score_col], config.quantiles)
-    return day.dropna(subset=["quantile", return_col])
+    # Form holdings using information known at rebalance, never future returns.
+    return day.dropna(subset=["quantile"])
+
+
+def _valued_period(rows: pd.DataFrame, return_col: str, *, unobserved_tail: bool) -> bool:
+    values = rows[return_col]
+    if unobserved_tail and values.isna().all():
+        return False  # An entirely unobserved terminal horizon has no return yet.
+    if not np.isfinite(values.astype(float)).all():
+        raise ValueError(
+            "Missing or nonfinite forward returns for selected holdings; no reweighting"
+        )
+    return True
 
 
 def _long_only_retail_daily(
@@ -234,6 +246,7 @@ def _long_only_rebalance_loop(
 
     cash = float(config.costs.initial_capital)
     holdings: dict[str, int] = {}
+    last_valued_date = panel.loc[panel[return_col].notna(), "date"].max()
 
     for rebalance_date in rebalance_idx:
         day = _prepare_rebalance_day(panel, rebalance_date, score_col, return_col, config)
@@ -242,6 +255,12 @@ def _long_only_rebalance_loop(
 
         longs = day[day["quantile"] == float(long_q)]
         if longs.empty:
+            continue
+        if not _valued_period(
+            longs,
+            return_col,
+            unobserved_tail=pd.isna(last_valued_date) or rebalance_date > last_valued_date,
+        ):
             continue
 
         if config.costs.retail_mode:
@@ -375,10 +394,18 @@ def _quantile_rebalance_loop(
     turnover_rows: list[dict[str, float | pd.Timestamp]] = []
     prev_holdings: dict[int, set[str]] = {}
     portfolio_value = float(config.costs.initial_capital)
+    last_valued_date = panel.loc[panel[return_col].notna(), "date"].max()
 
     for rebalance_date in rebalance_idx:
         day = _prepare_rebalance_day(panel, rebalance_date, score_col, return_col, config)
         if day.empty:
+            continue
+
+        if not _valued_period(
+            day,
+            return_col,
+            unobserved_tail=pd.isna(last_valued_date) or rebalance_date > last_valued_date,
+        ):
             continue
 
         curr_holdings: dict[int, set[str]] = {}
@@ -402,8 +429,14 @@ def _quantile_rebalance_loop(
                 )
                 net = gross - yuan_cost / portfolio_value if portfolio_value > 0 else gross
             else:
-                net = _apply_costs(gross, turnover, config)
+                q = int(quantile)
+                leg_turnover = _compute_leg_turnover(
+                    prev_holdings.get(q, set()), curr_holdings.get(q, set())
+                )
+                net = _apply_costs(gross, leg_turnover, config)
             row[f"Q{int(quantile)}"] = net
+            if int(quantile) == 1:
+                turnover_rows[-1]["short_leg_cost"] = gross - net
         period_returns.append(row)
         prev_holdings = curr_holdings
 
@@ -431,9 +464,7 @@ def _quantile_backtest_stats(
     if not benchmark.empty and not long_short.empty:
         aligned_benchmark = align_benchmark_returns(benchmark, long_short.index)
         excess_ls = long_short - aligned_benchmark
-        stats_rows.append(
-            _portfolio_stats_row(excess_ls, periods_per_year, "long_short_excess")
-        )
+        stats_rows.append(_portfolio_stats_row(excess_ls, periods_per_year, "long_short_excess"))
 
     return pd.DataFrame(stats_rows)
 
@@ -462,7 +493,13 @@ def run_quantile_backtest(
     turnover_df = pd.DataFrame(turnover_rows).set_index("date") if turnover_rows else pd.DataFrame()
 
     if "Q1" in quantile_returns.columns and f"Q{config.quantiles}" in quantile_returns.columns:
-        long_short = quantile_returns[f"Q{config.quantiles}"] - quantile_returns["Q1"]
+        # Both legs pay costs. Subtracting two net long portfolios would refund
+        # the short leg's cost instead of charging it.
+        long_short = (
+            quantile_returns[f"Q{config.quantiles}"]
+            - quantile_returns["Q1"]
+            - 2 * turnover_df["short_leg_cost"]
+        )
     else:
         long_short = pd.Series(dtype=float)
 
