@@ -61,6 +61,57 @@ def causal_asset_returns(raw, actions=None):
     return returns
 
 
+def _price_availability(raw):
+    """Preserve explicit vendor arrival times instead of relabeling them as close.
+
+    Missing columns retain the historical caller-assumed close contract. This
+    compatibility path is not evidence of historical PIT source availability.
+    An explicitly supplied but missing, naive, or pre-close timestamp is invalid.
+    """
+    closes = pd.to_datetime(raw.date).dt.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=15)
+    closes = closes.dt.tz_convert("UTC")
+    if "available_at" not in raw:
+        return closes
+    values = []
+    for value in raw.available_at:
+        timestamp = pd.Timestamp(value)
+        if pd.isna(timestamp) or timestamp.tzinfo is None:
+            raise ValueError("Price available_at must be complete and timezone-aware")
+        values.append(timestamp.tz_convert("UTC"))
+    available = pd.Series(values, index=raw.index, dtype="datetime64[ns, UTC]")
+    if available.lt(closes).any():
+        raise ValueError("Daily close available_at cannot precede the market close")
+    return available
+
+
+def _exposure_availability(rows, cutoff, fields):
+    """Honor explicitly supplied per-feature and underlying price availability."""
+    latest = cutoff
+    for field in ["available_at", *(name + "_available_at" for name in fields)]:
+        if field not in rows:
+            continue
+        for value in rows[field]:
+            timestamp = pd.Timestamp(value)
+            if pd.isna(timestamp) or timestamp.tzinfo is None:
+                raise ValueError("Exposure availability must be complete and timezone-aware")
+            latest = max(latest, timestamp.tz_convert("UTC"))
+    return latest
+
+
+def _action_availability(actions):
+    if actions is None or actions.empty or "available_at" not in actions:
+        return {}
+    arrivals = {}
+    for row in actions.itertuples():
+        timestamp = pd.Timestamp(row.available_at)
+        if pd.isna(timestamp) or timestamp.tzinfo is None:
+            raise ValueError("Action available_at must be complete and timezone-aware")
+        day = pd.Timestamp(row.ex_date)
+        timestamp = timestamp.tz_convert("UTC")
+        arrivals[day] = max(arrivals.get(day, timestamp), timestamp)
+    return arrivals
+
+
 def build_risk_schedule(research, recipe, sessions, *, raw_prices, actions=None, history=None):
     """Fit on lagged exposures and returns available at each completed close."""
     from quant_risk_monitor.factor_model import (
@@ -76,6 +127,12 @@ def build_risk_schedule(research, recipe, sessions, *, raw_prices, actions=None,
         return {}
     settings = validate_risk_model(config, recipe.get("required_history", {})) if config else None
     returns = causal_asset_returns(raw_prices, actions)
+    price_arrivals = (
+        raw_prices.assign(_risk_available_at=_price_availability(raw_prices))
+        .groupby("date")
+        ._risk_available_at.max()
+    )
+    action_arrivals = _action_availability(actions)
     symbols = returns.columns
     snapshots, observations = [], []
     schedule = {}
@@ -97,9 +154,14 @@ def build_risk_schedule(research, recipe, sessions, *, raw_prices, actions=None,
                 snapshots.append(
                     ExposureSnapshot(
                         effective_at=cutoff,
-                        available_at=cutoff,
+                        available_at=max(
+                            _exposure_availability(
+                                rows, cutoff, settings["exposure_fields"].values()
+                            ),
+                            price_arrivals.loc[day] if settings["exposure_fields"] else cutoff,
+                        ),
                         values=exposures,
-                        source="PIT-history-at-close",
+                        source="caller-exposure-history; explicit-arrivals-when-supplied",
                     )
                 )
             if offset:
@@ -110,9 +172,18 @@ def build_risk_schedule(research, recipe, sessions, *, raw_prices, actions=None,
                     AssetReturnObservation(
                         period_start=prior,
                         period_end=cutoff,
-                        available_at=cutoff,
+                        available_at=max(
+                            price_arrivals.loc[day],
+                            price_arrivals.loc[returns.index[offset - 1]],
+                            action_arrivals.get(day, cutoff),
+                        ),
                         values=values,
-                        source="raw-traded-close+previously-announced-entitlement",
+                        source="raw-traded-close+previously-announced-entitlement; "
+                        + (
+                            "explicit-price-arrival"
+                            if "available_at" in raw_prices
+                            else "caller-assumed-close-availability"
+                        ),
                     )
                 )
         if day not in session_set:
@@ -135,9 +206,11 @@ def build_risk_schedule(research, recipe, sessions, *, raw_prices, actions=None,
                 "specific_variance_shrinkage",
                 "annualization",
             )
-            selected = observations[-settings["lookback"] :]
+            selected = [row for row in observations if row.available_at <= cutoff][
+                -settings["lookback"] :
+            ]
             model = fit_barra_style_risk_model(
-                exposure_snapshots=snapshots[-len(selected) - 1 :],
+                exposure_snapshots=[row for row in snapshots if row.available_at <= cutoff],
                 return_observations=selected,
                 as_of=cutoff,
                 config=FactorModelConfig(
