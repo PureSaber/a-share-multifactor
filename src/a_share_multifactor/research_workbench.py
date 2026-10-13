@@ -801,6 +801,7 @@ class EquityResearchExecutor:
             prepared["evaluation_sessions"],
             raw_prices=raw,
             actions=frames.get("actions"),
+            history=prepared["history"],
         )
         if risk_schedule:
             (output / "risk_models.json").write_text(

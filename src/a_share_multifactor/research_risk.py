@@ -61,7 +61,7 @@ def causal_asset_returns(raw, actions=None):
     return returns
 
 
-def build_risk_schedule(research, recipe, sessions, *, raw_prices, actions=None):
+def build_risk_schedule(research, recipe, sessions, *, raw_prices, actions=None, history=None):
     """Fit on lagged exposures and returns available at each completed close."""
     from quant_risk_monitor.factor_model import (
         AssetReturnObservation,
@@ -84,19 +84,24 @@ def build_risk_schedule(research, recipe, sessions, *, raw_prices, actions=None)
         cutoff = pd.Timestamp(day).tz_localize("UTC") + pd.Timedelta(hours=7)
         rows = research.loc[research.date.eq(day)].set_index("symbol").reindex(symbols)
         if settings:
-            exposures = pd.DataFrame(index=symbols)
-            if settings["market_factor"]:
-                exposures["market"] = 1.0
-            for factor, field in settings["exposure_fields"].items():
-                exposures[factor] = pd.to_numeric(rows[field], errors="raise")
-            snapshots.append(
-                ExposureSnapshot(
-                    effective_at=cutoff,
-                    available_at=cutoff,
-                    values=exposures,
-                    source="PIT-history-at-close",
+            if settings.get("exposure_pipeline") is not None:
+                snapshots.append(
+                    _pipeline_snapshot(rows, cutoff, settings["exposure_pipeline"], history)
                 )
-            )
+            else:
+                exposures = pd.DataFrame(index=symbols)
+                if settings["market_factor"]:
+                    exposures["market"] = 1.0
+                for factor, field in settings["exposure_fields"].items():
+                    exposures[factor] = pd.to_numeric(rows[field], errors="raise")
+                snapshots.append(
+                    ExposureSnapshot(
+                        effective_at=cutoff,
+                        available_at=cutoff,
+                        values=exposures,
+                        source="PIT-history-at-close",
+                    )
+                )
             if offset:
                 prior = pd.Timestamp(returns.index[offset - 1]).tz_localize("UTC") + pd.Timedelta(
                     hours=7
@@ -135,13 +140,79 @@ def build_risk_schedule(research, recipe, sessions, *, raw_prices, actions=None)
                 exposure_snapshots=snapshots[-len(selected) - 1 :],
                 return_observations=selected,
                 as_of=cutoff,
-                config=FactorModelConfig(**{key: settings[key] for key in config_keys}),
+                config=FactorModelConfig(
+                    **{key: settings[key] for key in config_keys}, **settings["estimation"]
+                ),
             )
             if set(settings["benchmark_weights"]) - set(symbols):
                 raise ValueError("Benchmark references assets missing from risk model")
             item["model"] = model
         schedule[day.date()] = item
     return schedule
+
+
+def _pipeline_snapshot(rows, cutoff, pipeline, history):
+    """Materialize each descriptor and classification from its original vintage."""
+    from dataclasses import replace
+
+    from quant_data_kit.research_coverage import asof_history
+    from quant_risk_monitor import ExposureBuildConfig, build_exposure_snapshot
+
+    if history is None:
+        raise ValueError("exposure_pipeline requires original PIT history with source vintages")
+    mappings = {"market_cap": pipeline["market_cap_field"], **pipeline["descriptor_fields"]}
+    descriptors = pd.DataFrame(index=rows.index)
+    lineage, effective, available = {}, [], []
+    for descriptor, field in mappings.items():
+        selected = (
+            asof_history(history, as_of=cutoff, domain="fundamentals", field=field)
+            .set_index("symbol")
+            .reindex(rows.index)
+        )
+        if selected.effective_at.isna().any() or selected.available_at.isna().any():
+            raise ValueError(f"Missing original PIT descriptor history for {field}")
+        maximum_age = pipeline["config"].get("max_descriptor_age_days")
+        if (
+            maximum_age is not None
+            and ((cutoff - selected.effective_at).dt.total_seconds() > maximum_age * 86400).any()
+        ):
+            raise ValueError(f"Stale original PIT descriptor history for {field}")
+        descriptors[descriptor] = pd.to_numeric(selected.value, errors="raise")
+        effective.append(selected.effective_at)
+        available.append(selected.available_at)
+        lineage[field] = selected.reset_index().astype(str).to_dict("records")
+    descriptors["effective_at"] = pd.concat(effective, axis=1).max(axis=1)
+    descriptors["available_at"] = pd.concat(available, axis=1).max(axis=1)
+    descriptors["source"] = "research-original-PIT-descriptor-vintages"
+    descriptors["asset"] = rows.index
+    field = pipeline["industry_field"]
+    selected = (
+        asof_history(history, as_of=cutoff, domain="classification", field=field)
+        .set_index("symbol")
+        .reindex(rows.index)
+    )
+    if selected.effective_at.isna().any():
+        raise ValueError("Missing original PIT classification history")
+    classifications = pd.DataFrame(
+        {
+            "asset": rows.index,
+            "effective_at": selected.effective_at.to_numpy(),
+            "available_at": selected.available_at.to_numpy(),
+            "source": "research-original-PIT-classification-vintage",
+            "industry": selected.value.to_numpy(),
+        }
+    )
+    lineage[field] = selected.reset_index().astype(str).to_dict("records")
+    snapshot = build_exposure_snapshot(
+        descriptor_history=descriptors,
+        classification_history=classifications,
+        assets=list(rows.index),
+        as_of=cutoff,
+        config=ExposureBuildConfig(**pipeline["config"]),
+    )
+    return replace(
+        snapshot, provenance={**snapshot.provenance, "research_history_lineage": lineage}
+    )
 
 
 def allocation_risk_inputs(item, symbols, risk):
