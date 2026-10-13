@@ -181,11 +181,11 @@ quant-execution @ git+https://github.com/PureSaber/quant-execution.git@21aace45d
     #   quant-risk-monitor
 quant-factors @ git+https://github.com/PureSaber/quant-factors.git@249fb621d4d880942cb5dfbbcd812c0d45bf45a2
     # via a-share-multifactor (pyproject.toml)
-quant-lab @ git+https://github.com/PureSaber/quant-lab.git@126e0ce1ae3cad7121baf7c311365ca4a7ad42c8
+quant-lab @ git+https://github.com/PureSaber/quant-lab.git@6c92e113aa839f12075655b7a35060d575895f3a
     # via a-share-multifactor (pyproject.toml)
 quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@ca1af5a27e3f975931a48ccd11f41e1743848891
     # via a-share-multifactor (pyproject.toml)
-quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@ea93b100a97e0226e90e71fac06f70a40baaa212
+quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@88d05a684ad411082371c1460f81bd68fd127211
     # via a-share-multifactor (pyproject.toml)
 referencing==0.37.0
     # via
