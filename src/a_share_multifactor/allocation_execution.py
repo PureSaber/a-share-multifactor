@@ -37,6 +37,7 @@ def executable_allocation(strategy, plan, snapshot, nav):
     states = gate.capture_state()
     lower, upper, buy_limits, sell_limits = {}, {}, {}, {}
     lots = {}
+    fixed_targets = {}
     for asset in traded_assets:
         spec = gate.instruments[asset]
         lots[asset] = int(spec.metadata["lot_size"])
@@ -54,6 +55,12 @@ def executable_allocation(strategy, plan, snapshot, nav):
         state = states["states"].get(asset)
         if state is None or state.status not in {"open", "trading", "normal"}:
             sellable, buyable = 0, 0
+        if asset not in plan["scores"].index:
+            # Leave only the known unsellable/odd-lot remainder outside the
+            # investment universe. Neither the solver nor repair may retain a
+            # freely tradable excluded holding merely to save turnover costs.
+            sellable = (sellable // lots[asset]) * lots[asset]
+            fixed_targets[asset] = held - sellable
         sell_limits[asset], buy_limits[asset] = sellable, buyable
         lower[asset] = float(Decimal(held - sellable) * marks[asset] / nav)
         upper[asset] = (
@@ -61,6 +68,8 @@ def executable_allocation(strategy, plan, snapshot, nav):
             if buyable
             else float(Decimal(held) * marks[asset] / nav)
         )
+        if asset in fixed_targets:
+            upper[asset] = lower[asset]
     costs = strategy.costs
     from a_share_multifactor.trading_costs import stamp_duty_rate
 
@@ -129,7 +138,8 @@ def executable_allocation(strategy, plan, snapshot, nav):
             risk=risk,
             benchmark=wb,
         )
-        residuals["max_holdings"] = int((vector > 1e-9).sum()) - costs.max_holdings
+        if costs.max_holdings > 0:
+            residuals["max_holdings"] = int((vector > 1e-9).sum()) - costs.max_holdings
         return residuals
 
     def quote(asset, delta):
@@ -155,6 +165,7 @@ def executable_allocation(strategy, plan, snapshot, nav):
         cash=cash,
         nav=nav,
         non_cash_assets=gate.ledger.dividend_receivable_balance("CNY"),
+        fixed_quantities=fixed_targets,
         quote_trade=quote,
         constraint_residuals=check,
         max_invested=plan["invested_limit"],
