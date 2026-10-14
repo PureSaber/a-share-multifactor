@@ -23,7 +23,7 @@ dependencies = [
 "quant-factors @ git+https://github.com/PureSaber/quant-factors.git@1c798bc737bc92fa5eca85dd0663dc608104f721",
     "quant-execution @ git+https://github.com/PureSaber/quant-execution.git@8423726a9d80b6509d2c016a7478fc0f40a29774",
     "quant-lab @ git+https://github.com/PureSaber/quant-lab.git@4c48f8a678c8d29a7dc46294c99f0e668cd6c52b",
-    "quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@8db176e6f92210cc43e0c6043ac05e1f53ceb6d1",
+    "quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@7cba8409559fb1625e88b15b983a446e2e6e61d6",
     "quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@e26117c792b08477ff131d3c876c0bde4c1f05b1",
 ]
 
