@@ -573,6 +573,7 @@ class _TargetWeightStrategy:
         plan = self.allocation_schedule[day]
         scores = plan["scores"]
         settings = validate_research_allocation(plan["allocation"])
+        diagnostics = {}
         held = {
             str(symbol): _decimal(quantity)
             for symbol, quantity in snapshot.positions.items()
@@ -596,6 +597,10 @@ class _TargetWeightStrategy:
                 raise ValueError("allocation.max_turnover is infeasible for liquidation")
             weights = pd.Series(dtype=float)
             target = {}
+        elif settings.get("protocol_version") == 2 or plan.get("risk_snapshot") is not None:
+            from a_share_multifactor.allocation_execution import executable_allocation
+
+            weights, target, diagnostics = executable_allocation(self, plan, snapshot, nav)
         else:
             weights = research_allocation_weights(
                 scores,
@@ -633,7 +638,9 @@ class _TargetWeightStrategy:
                 "nav": float(nav),
                 "mode": plan["allocation"]["mode"],
                 "weights": {str(key): float(value) for key, value in weights.items()},
+                "current_weights": current_weights.to_dict(),
                 "targets": target.copy(),
+                "diagnostics": diagnostics or weights.attrs.get("allocation_diagnostics", {}),
             }
         )
         return target
@@ -868,7 +875,40 @@ class _TargetWeightStrategy:
             return ()
         new_target = False
         if self.allocation_schedule is not None and event.trading_day in self.allocation_schedule:
-            target = self._allocation_target(event.trading_day, snapshot, nav_decimal)
+            from quant_portfolio.solver import OptimizationError
+
+            try:
+                target = self._allocation_target(event.trading_day, snapshot, nav_decimal)
+            except OptimizationError as exc:
+                self._deferred_targets = {}
+                self._target_active = False
+                self._allocation_decisions.append(
+                    {
+                        "session": event.trading_day.isoformat(),
+                        "nav": nav,
+                        "mode": self.allocation_schedule[event.trading_day]["allocation"]["mode"],
+                        "status": exc.status,
+                        "diagnostics": exc.diagnostics,
+                        "error": str(exc),
+                        "published": False,
+                    }
+                )
+                self._risk_checks.append(
+                    {
+                        "session": event.trading_day.isoformat(),
+                        "stage": "allocation",
+                        "has_critical": True,
+                        "alerts": [
+                            {
+                                "rule_id": "portfolio.optimizer_" + exc.status,
+                                "severity": "critical",
+                                "message": str(exc),
+                                "details": exc.diagnostics,
+                            }
+                        ],
+                    }
+                )
+                return ()
             new_target = True
         else:
             target = self.schedule.get(

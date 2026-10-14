@@ -76,6 +76,47 @@ def execute(executor, recipe, candidate, path):
     return executor(recipe, candidate, path)
 
 
+@pytest.mark.parametrize("return_model", ["ic_vol", "provided"])
+def test_v2_mature_ic_to_exact_account_and_diagnostics(recipe, tmp_path, return_model):
+    recipe["allocation"] = {
+        "protocol_version": 2,
+        "mode": "cost_aware",
+        "risk_objective": "absolute",
+        "forecast_horizon_sessions": 1,
+        "expected_return_model": return_model,
+        "max_turnover": 2.0,
+        "ic_min_periods": 5,
+    }
+    if return_model == "provided":
+        raw = pd.read_parquet(Path(recipe["inputs"]["bundle"]) / "raw.parquet")
+        forecasts = raw[["date", "symbol"]].rename(columns={"date": "forecast_at"})
+        forecasts["forecast_at"] = pd.to_datetime(forecasts.forecast_at).dt.tz_localize("UTC")
+        forecasts["available_at"] = forecasts.forecast_at
+        forecasts["horizon_sessions"] = 1
+        forecasts["expected_return"] = 0.001
+        forecasts["model_version"] = "fixture-return-v1"
+        forecast_file = tmp_path / "forecasts.csv"
+        forecasts.to_csv(forecast_file, index=False)
+        recipe["inputs"]["return_forecasts"] = str(forecast_file)
+    result = execute(EquityResearchExecutor(), recipe, candidates(recipe)[0], tmp_path / "v2")
+    assert result["metrics"]["fills"] > 0
+    decisions = result["optimizer_summary"]["decisions"]
+    successful = [row for row in decisions if row.get("published") is not False]
+    assert successful
+    for row in successful:
+        diag = row["diagnostics"]
+        assert diag["protocol_version"] == 2
+        if return_model == "ic_vol":
+            assert diag["ic_periods"] >= 5
+        assert diag["risk_objective"] == "absolute"
+        assert diag["max_constraint_residual"] <= 1e-7
+        assert Decimal(diag["execution"]["cash"]) >= 0
+        assert all(quantity % 100 == 0 for quantity in row["targets"].values())
+    assert load_and_validate_standard_run(tmp_path / "v2").profile == "backtest-ledger"
+    if return_model == "provided":
+        assert (tmp_path / "v2/return_forecasts.csv").read_bytes() == forecast_file.read_bytes()
+
+
 def test_candidate_ledgers_cost_stress_and_data_cache(recipe, tmp_path):
     executor = EquityResearchExecutor()
     planned = candidates(recipe)
@@ -121,7 +162,7 @@ def test_factor_risk_reaches_optimizer_and_blocks_tracking_error(recipe, tmp_pat
         "risk_checks"
     ]
     assert any(
-        a["rule_id"] == "portfolio.max_tracking_error" for row in checks for a in row["alerts"]
+        a["rule_id"] == "portfolio.optimizer_infeasible" for row in checks for a in row["alerts"]
     )
 
 

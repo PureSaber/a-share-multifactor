@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -390,6 +391,17 @@ def _prepare_research_inputs(
     allocation = (
         validate_research_allocation(allocation_value) if allocation_value is not None else None
     )
+    forecasts = None
+    if (
+        allocation
+        and allocation.get("protocol_version") == 2
+        and allocation["expected_return_model"] == "provided"
+    ):
+        from a_share_multifactor.return_forecasts import read_forecasts
+
+        if "return_forecasts" not in recipe["inputs"]:
+            raise ValueError("provided return model requires inputs.return_forecasts")
+        forecasts = read_forecasts(recipe["inputs"]["return_forecasts"])
     history = None
     if "history" in recipe["inputs"]:
         _, history = load_research_history(Path(recipe["inputs"]["history"]))
@@ -547,6 +559,7 @@ def _prepare_research_inputs(
         "allocation": allocation,
         "execution": execution,
         "status_panel": status_panel,
+        "return_forecasts": forecasts,
         "status_events": status_events,
         "evaluation_sessions": sessions,
         "report": report,
@@ -809,7 +822,9 @@ class EquityResearchExecutor:
                     {
                         day.isoformat(): {
                             "classifications": item["classifications"],
-                            "model": item["model"].to_dict() if item["model"] else None,
+                            "model": item["model"].to_dict(include_asset_covariance=False)
+                            if item["model"]
+                            else None,
                         }
                         for day, item in risk_schedule.items()
                     }
@@ -833,6 +848,19 @@ class EquityResearchExecutor:
         else:
             schedule = {}
             allocation_schedule = {}
+            label_history = None
+            provided = prepared["return_forecasts"]
+            if provided is not None:
+                (output / "return_forecasts.csv").write_bytes(provided[1])
+            if (
+                allocation.get("protocol_version") == 2
+                and allocation["expected_return_model"] == "ic_vol"
+            ):
+                from a_share_multifactor.research_risk import allocation_labels
+
+                label_history = allocation_labels(
+                    features, raw, frames.get("actions"), allocation["forecast_horizon_sessions"]
+                )
             closes = (
                 research.pivot(index="date", columns="symbol", values="close")
                 .sort_index()
@@ -861,6 +889,9 @@ class EquityResearchExecutor:
                 day_invested = min(invested, len(selected) * cfg.costs.max_position_weight)
                 allocation_schedule[day.date()] = {
                     "scores": selected.set_index("symbol").composite_score.astype(float),
+                    "signal_cross_section": eligible.set_index("symbol").composite_score.astype(
+                        float
+                    ),
                     "trailing_returns": closes.loc[closes.index <= day],
                     "allocation": allocation,
                     "invested_limit": day_invested,
@@ -871,6 +902,33 @@ class EquityResearchExecutor:
                         dtype=float,
                     ),
                 }
+                if allocation.get("protocol_version") == 2:
+                    from a_share_multifactor.research_risk import (
+                        _price_availability,
+                        causal_asset_returns,
+                    )
+
+                    available = (
+                        raw.assign(arrival=_price_availability(raw)).groupby("date").arrival.max()
+                    )
+                    cutoff = pd.Timestamp(day).tz_localize("Asia/Shanghai") + pd.Timedelta(hours=15)
+                    past = causal_asset_returns(raw, frames.get("actions"))
+                    past = past.loc[(past.index <= day) & (available.reindex(past.index) <= cutoff)]
+                    past.index = pd.DatetimeIndex(available.reindex(past.index))
+                    allocation_schedule[day.date()].update(
+                        trailing_returns=past.dropna(how="all"),
+                        ic_labels=label_history,
+                        decision_at=cutoff,
+                    )
+                    if provided is not None:
+                        from a_share_multifactor.return_forecasts import forecasts_at
+
+                        allocation_schedule[day.date()]["expected_returns"] = forecasts_at(
+                            provided[0],
+                            decision_at=cutoff,
+                            assets=selected.symbol,
+                            horizon_sessions=allocation["forecast_horizon_sessions"],
+                        )
                 if risk_schedule:
                     allocation_schedule[day.date()].update(
                         allocation_risk_inputs(
@@ -1001,6 +1059,22 @@ class EquityResearchExecutor:
             )
         return {
             "metrics": metrics,
+            "optimizer_summary": {
+                "decisions": list(replay.allocation_decisions),
+                "failed_decisions": sum(
+                    row.get("published") is False for row in replay.allocation_decisions
+                ),
+                "decision_count": len(replay.allocation_decisions),
+                "actual_risk_checks": [
+                    row for row in replay.risk_checks if row.get("stage") == "realized"
+                ],
+                "positions_artifact": "positions.parquet",
+                "actual_positions": json.loads(
+                    replay.frames["positions"].to_json(orient="records", date_format="iso")
+                ),
+                "actual_cost_total": metrics["cost_total"],
+                "execution_artifact": "execution_diagnostics.json",
+            },
             "investment_evidence": {
                 "benchmark_id": recipe.get("objective", {}).get("benchmark_id"),
                 "net_return": metrics["total_return"],

@@ -135,7 +135,7 @@ pyarrow==25.0.1
     #   quant-factors
     #   quant-lab
     #   quant-portfolio
-pycparser==3.0
+pycparser==3.11 ; implementation_name != 'PyPy'
     # via cffi
 pygments==2.21.0
     # via pytest
@@ -167,25 +167,25 @@ pyyaml==6.0.3
     #   quant-lab
     #   quant-portfolio
     #   quant-risk-monitor
-quant-data-kit @ git+https://github.com/PureSaber/quant-data-kit.git@ba136c2fa2eea121bfb2ad7887b536c3952586f7
+quant-data-kit @ git+https://github.com/PureSaber/quant-data-kit.git@ad3440700b226497c40093197f1df4321b49d1e8
     # via
     #   a-share-multifactor (pyproject.toml)
     #   quant-execution
     #   quant-factors
     #   quant-portfolio
     #   quant-risk-monitor
-quant-execution @ git+https://github.com/PureSaber/quant-execution.git@21aace45d2dde6458db8fcda4829f252f8c640f1
+quant-execution @ git+https://github.com/PureSaber/quant-execution.git@8423726a9d80b6509d2c016a7478fc0f40a29774
     # via
     #   a-share-multifactor (pyproject.toml)
     #   quant-portfolio
     #   quant-risk-monitor
-quant-factors @ git+https://github.com/PureSaber/quant-factors.git@249fb621d4d880942cb5dfbbcd812c0d45bf45a2
+quant-factors @ git+https://github.com/PureSaber/quant-factors.git@1c798bc737bc92fa5eca85dd0663dc608104f721
     # via a-share-multifactor (pyproject.toml)
-quant-lab @ git+https://github.com/PureSaber/quant-lab.git@6c92e113aa839f12075655b7a35060d575895f3a
+quant-lab @ git+https://github.com/PureSaber/quant-lab.git@4c48f8a678c8d29a7dc46294c99f0e668cd6c52b
     # via a-share-multifactor (pyproject.toml)
-quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@ca1af5a27e3f975931a48ccd11f41e1743848891
+quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@6922ca23685bcaea0b3ce9f2416777e1303fc86c
     # via a-share-multifactor (pyproject.toml)
-quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@88d05a684ad411082371c1460f81bd68fd127211
+quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@e26117c792b08477ff131d3c876c0bde4c1f05b1
     # via a-share-multifactor (pyproject.toml)
 referencing==0.37.0
     # via
@@ -250,3 +250,9 @@ setuptools==84.0.0
     # via
     #   a-share-multifactor (pyproject.toml::build-system.requires)
     #   pip-tools
+clarabel==0.11.1
+cvxpy==1.7.5
+jinja2==3.1.6
+markupsafe==3.0.4
+osqp==1.0.5
+scs==3.3.1
