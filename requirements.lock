@@ -24,9 +24,15 @@ certifi==2026.7.22
     #   curl-cffi
     #   requests
 cffi==2.1.1
-    # via curl-cffi
+    # via
+    #   clarabel
+    #   curl-cffi
 charset-normalizer==3.5.1
     # via requests
+clarabel==0.11.1
+    # via
+    #   cvxpy
+    #   quant-portfolio
 click==8.5.0
     # via pip-tools
 cloudpickle==3.1.2
@@ -42,6 +48,8 @@ coverage==7.16.0
     # via pytest-cov
 curl-cffi==0.16.2
     # via akshare
+cvxpy==1.7.5
+    # via quant-portfolio
 cycler==0.12.1
     # via matplotlib
 decorator==5.3.1
@@ -62,9 +70,12 @@ idna==3.19
     # via requests
 iniconfig==2.3.0
     # via pytest
+jinja2==3.1.6
+    # via osqp
 joblib==1.6.0
     # via
     #   -c constraints/runtime.txt
+    #   osqp
     #   scikit-learn
 jsonpath==0.82.2
     # via akshare
@@ -80,6 +91,8 @@ kiwisolver==1.5.1
     # via matplotlib
 lxml==6.1.2
     # via akshare
+markupsafe==3.0.4
+    # via jinja2
 matplotlib==3.10.9
     # via a-share-multifactor (pyproject.toml)
 mini-racer==0.14.1
@@ -90,8 +103,11 @@ mini-racer==0.14.1
 numpy==2.2.6
     # via
     #   a-share-multifactor (pyproject.toml)
+    #   clarabel
     #   contourpy
+    #   cvxpy
     #   matplotlib
+    #   osqp
     #   pandas
     #   quant-data-kit
     #   quant-factors
@@ -100,10 +116,15 @@ numpy==2.2.6
     #   quant-risk-monitor
     #   scikit-learn
     #   scipy
+    #   scs
 openpyxl==3.1.5
     # via akshare
 orjson==3.12.0
     # via quant-data-kit
+osqp==1.0.5
+    # via
+    #   cvxpy
+    #   quant-portfolio
 packaging==26.3
     # via
     #   build
@@ -135,7 +156,7 @@ pyarrow==25.0.1
     #   quant-factors
     #   quant-lab
     #   quant-portfolio
-pycparser==3.0
+pycparser==3.11
     # via cffi
 pygments==2.21.0
     # via pytest
@@ -167,25 +188,26 @@ pyyaml==6.0.3
     #   quant-lab
     #   quant-portfolio
     #   quant-risk-monitor
-quant-data-kit @ git+https://github.com/PureSaber/quant-data-kit.git@ba136c2fa2eea121bfb2ad7887b536c3952586f7
+quant-data-kit @ git+https://github.com/PureSaber/quant-data-kit.git@ad3440700b226497c40093197f1df4321b49d1e8
     # via
     #   a-share-multifactor (pyproject.toml)
     #   quant-execution
     #   quant-factors
+    #   quant-lab
     #   quant-portfolio
     #   quant-risk-monitor
-quant-execution @ git+https://github.com/PureSaber/quant-execution.git@21aace45d2dde6458db8fcda4829f252f8c640f1
+quant-execution @ git+https://github.com/PureSaber/quant-execution.git@8423726a9d80b6509d2c016a7478fc0f40a29774
     # via
     #   a-share-multifactor (pyproject.toml)
     #   quant-portfolio
     #   quant-risk-monitor
-quant-factors @ git+https://github.com/PureSaber/quant-factors.git@249fb621d4d880942cb5dfbbcd812c0d45bf45a2
+quant-factors @ git+https://github.com/PureSaber/quant-factors.git@1c798bc737bc92fa5eca85dd0663dc608104f721
     # via a-share-multifactor (pyproject.toml)
-quant-lab @ git+https://github.com/PureSaber/quant-lab.git@6c92e113aa839f12075655b7a35060d575895f3a
+quant-lab @ git+https://github.com/PureSaber/quant-lab.git@4c48f8a678c8d29a7dc46294c99f0e668cd6c52b
     # via a-share-multifactor (pyproject.toml)
-quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@ca1af5a27e3f975931a48ccd11f41e1743848891
+quant-portfolio @ git+https://github.com/PureSaber/quant-portfolio.git@7cba8409559fb1625e88b15b983a446e2e6e61d6
     # via a-share-multifactor (pyproject.toml)
-quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@88d05a684ad411082371c1460f81bd68fd127211
+quant-risk-monitor @ git+https://github.com/PureSaber/quant-risk-monitor.git@e26117c792b08477ff131d3c876c0bde4c1f05b1
     # via a-share-multifactor (pyproject.toml)
 referencing==0.37.0
     # via
@@ -202,7 +224,14 @@ ruff==0.16.5
 scikit-learn==1.7.2
     # via a-share-multifactor (pyproject.toml)
 scipy==1.15.3
-    # via scikit-learn
+    # via
+    #   clarabel
+    #   cvxpy
+    #   osqp
+    #   scikit-learn
+    #   scs
+scs==3.3.1
+    # via cvxpy
 six==1.17.0
     # via
     #   html5lib
@@ -249,4 +278,5 @@ pip==26.2.1
 setuptools==84.0.0
     # via
     #   a-share-multifactor (pyproject.toml::build-system.requires)
+    #   osqp
     #   pip-tools

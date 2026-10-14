@@ -573,6 +573,7 @@ class _TargetWeightStrategy:
         plan = self.allocation_schedule[day]
         scores = plan["scores"]
         settings = validate_research_allocation(plan["allocation"])
+        diagnostics = {}
         held = {
             str(symbol): _decimal(quantity)
             for symbol, quantity in snapshot.positions.items()
@@ -596,6 +597,10 @@ class _TargetWeightStrategy:
                 raise ValueError("allocation.max_turnover is infeasible for liquidation")
             weights = pd.Series(dtype=float)
             target = {}
+        elif settings.get("protocol_version") == 2 or plan.get("risk_snapshot") is not None:
+            from a_share_multifactor.allocation_execution import executable_allocation
+
+            weights, target, diagnostics = executable_allocation(self, plan, snapshot, nav)
         else:
             weights = research_allocation_weights(
                 scores,
@@ -633,7 +638,9 @@ class _TargetWeightStrategy:
                 "nav": float(nav),
                 "mode": plan["allocation"]["mode"],
                 "weights": {str(key): float(value) for key, value in weights.items()},
+                "current_weights": current_weights.to_dict(),
                 "targets": target.copy(),
+                "diagnostics": diagnostics or weights.attrs.get("allocation_diagnostics", {}),
             }
         )
         return target
@@ -679,7 +686,21 @@ class _TargetWeightStrategy:
                 classifications=self.risk_schedule.get(event.trading_day, {}).get(
                     "classifications", self.risk_limits.get("classifications", {})
                 ),
-                limits=DecisionPortfolioLimits.from_mapping(self.risk_limits),
+                limits=DecisionPortfolioLimits.from_mapping(
+                    {
+                        key: value
+                        for key, value in self.risk_limits.items()
+                        if key
+                        not in {
+                            "max_drawdown",
+                            "drawdown_action",
+                            "exposure_breach_action",
+                            "estimated_cost_rate_per_turnover",
+                            "classifications",
+                            "industry_field",
+                        }
+                    }
+                ),
                 estimated_cost_rate=(
                     None
                     if cost_per_turnover is None
@@ -687,6 +708,17 @@ class _TargetWeightStrategy:
                 ),
             )
             payload = result.to_dict()
+            payload["cost_forecast"] = {
+                "nav": str(nav),
+                "turnover": str(turnover),
+                "estimated_cost_amount": (
+                    None
+                    if cost_per_turnover is None
+                    else str(nav * turnover * Decimal(str(cost_per_turnover)))
+                ),
+                "rate_per_turnover": cost_per_turnover,
+                "basis": "configured comprehensive turnover-cost budget, not fees-only",
+            }
             if self.risk_schedule:
                 from a_share_multifactor.research_risk import check_model_target
 
@@ -714,6 +746,16 @@ class _TargetWeightStrategy:
                 "session": event.trading_day.isoformat(),
                 "checked_at": pd.Timestamp(event.available_at).isoformat(),
                 "stage": stage,
+                # Preserve the executable target after the portfolio gate. A
+                # rejected proposal is not an order or a zero-position target.
+                **(
+                    {
+                        "execution_target": dict(current if payload["has_critical"] else target),
+                        "target_admitted": not payload["has_critical"],
+                    }
+                    if stage == "target"
+                    else {}
+                ),
                 **payload,
             }
         )
@@ -796,6 +838,8 @@ class _TargetWeightStrategy:
                     "checked_at": pd.Timestamp(event.available_at).isoformat(),
                     action_field: action,
                     "halt_reason": self._risk_halt_reason,
+                    "execution_target": dict(current) if action == "halt" else {},
+                    "target_admitted": action == "liquidate",
                     "drawdown": 1 - nav / self._peak_nav,
                     "has_critical": True,
                     "alerts": [
@@ -831,7 +875,40 @@ class _TargetWeightStrategy:
             return ()
         new_target = False
         if self.allocation_schedule is not None and event.trading_day in self.allocation_schedule:
-            target = self._allocation_target(event.trading_day, snapshot, nav_decimal)
+            from quant_portfolio.solver import OptimizationError
+
+            try:
+                target = self._allocation_target(event.trading_day, snapshot, nav_decimal)
+            except OptimizationError as exc:
+                self._deferred_targets = {}
+                self._target_active = False
+                self._allocation_decisions.append(
+                    {
+                        "session": event.trading_day.isoformat(),
+                        "nav": nav,
+                        "mode": self.allocation_schedule[event.trading_day]["allocation"]["mode"],
+                        "status": exc.status,
+                        "diagnostics": exc.diagnostics,
+                        "error": str(exc),
+                        "published": False,
+                    }
+                )
+                self._risk_checks.append(
+                    {
+                        "session": event.trading_day.isoformat(),
+                        "stage": "allocation",
+                        "has_critical": True,
+                        "alerts": [
+                            {
+                                "rule_id": "portfolio.optimizer_" + exc.status,
+                                "severity": "critical",
+                                "message": str(exc),
+                                "details": exc.diagnostics,
+                            }
+                        ],
+                    }
+                )
+                return ()
             new_target = True
         else:
             target = self.schedule.get(

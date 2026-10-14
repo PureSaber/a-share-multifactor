@@ -91,8 +91,18 @@ def test_complete_history_to_model_to_allocator_and_target_check():
     item = schedule[dates[-1].date()]
     model = item["model"]
     inputs = allocation_risk_inputs(item, symbols, {})
-    pd.testing.assert_frame_equal(
-        inputs["covariance_override"], model.asset_covariance.loc[symbols, symbols]
+    snapshot = inputs["risk_snapshot"]
+    pd.testing.assert_frame_equal(snapshot.exposures, model.exposures)
+    pd.testing.assert_frame_equal(snapshot.factor_covariance, model.factor_covariance)
+    pd.testing.assert_series_equal(snapshot.specific_variance, model.specific_variances)
+    assert snapshot.matrix(symbols, model.as_of).variance(
+        np.ones(len(symbols)) / len(symbols)
+    ) == pytest.approx(
+        float(
+            (np.ones(len(symbols)) / len(symbols))
+            @ model.asset_covariance
+            @ (np.ones(len(symbols)) / len(symbols))
+        )
     )
     assert inputs["factor_bounds"]["size"] == (-2, 2)
     report, alerts = check_model_target(item, {symbol: 1 / 12 for symbol in symbols})
@@ -119,6 +129,47 @@ def test_future_history_revision_cannot_change_earlier_risk_forecasts():
         raw, recipe, [dates[-2]], raw_prices=raw, history=pd.concat([history, future])
     )
     assert before[dates[-2].date()]["model"].to_dict() == after[dates[-2].date()]["model"].to_dict()
+
+
+def test_three_percent_tracking_limit_reaches_solver_without_dense_covariance(monkeypatch):
+    from quant_portfolio.allocation_v2 import allocate_research
+
+    raw, dates, symbols, history, recipe = fixture()
+    recipe["risk_model"]["max_tracking_error"] = 0.03
+    schedule = build_risk_schedule(raw, recipe, [dates[-1]], raw_prices=raw, history=history)
+    item = schedule[dates[-1].date()]
+
+    def forbidden(_):
+        raise AssertionError("optimizer bridge accessed full asset covariance")
+
+    monkeypatch.setattr(type(item["model"]), "asset_covariance", property(forbidden))
+    inputs = allocation_risk_inputs(item, symbols[:8], {})
+    result = allocate_research(
+        pd.Series(np.linspace(0, 1, 8), index=symbols[:8]),
+        None,
+        pd.Series({symbols[-1]: 0.1}),
+        None,
+        invested_limit=0.8,
+        max_weight=0.2,
+        config={
+            "protocol_version": 2,
+            "mode": "cost_aware",
+            "risk_objective": "active",
+            "forecast_horizon_sessions": 3,
+            "expected_return_model": "provided",
+            "max_turnover": 2,
+        },
+        expected_returns=pd.Series(0.002, index=symbols[:8]),
+        **inputs,
+    )
+    report, alerts = check_model_target(item, result.weights)
+    assert alerts == []
+    assert result.diagnostics["annualized_tracking_error"] <= 0.03 + 1e-7
+    assert report["tracking_risk"]["volatility"] == pytest.approx(
+        result.diagnostics["annualized_tracking_error"]
+    )
+    assert set(result.weights.index) == set(symbols)
+    assert result.weights.sum() == pytest.approx(0.8)
 
 
 def test_original_history_age_and_source_coverage_are_not_reset_at_each_close():

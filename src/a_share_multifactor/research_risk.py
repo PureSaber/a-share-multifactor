@@ -84,6 +84,54 @@ def _price_availability(raw):
     return available
 
 
+def allocation_labels(features, raw, actions, horizon):
+    """Label history carries source availability; selection happens at solve time."""
+    returns = causal_asset_returns(raw, actions)
+    arrivals = raw.assign(arrival=_price_availability(raw)).groupby("date").arrival.max()
+    action_arrivals = _action_availability(actions)
+    signals = features.pivot(index="date", columns="symbol", values="composite_score")
+    records = []
+    for start in range(len(returns) - horizon):
+        first, last = returns.index[start], returns.index[start + horizon]
+        block = returns.iloc[start + 1 : start + horizon + 1]
+        signal_at = pd.Timestamp(first).tz_localize("Asia/Shanghai") + pd.Timedelta(hours=15)
+        label_end = pd.Timestamp(last).tz_localize("Asia/Shanghai") + pd.Timedelta(hours=15)
+        available = max(
+            arrivals.loc[returns.index[start : start + horizon + 1]].max(),
+            *(action_arrivals.get(day, label_end) for day in block.index),
+        )
+        for asset in returns.columns:
+            values = block[asset].to_numpy(dtype=float)
+            score = (
+                signals.loc[first, asset] if first in signals.index and asset in signals else np.nan
+            )
+            if not np.isfinite(values).all() or not np.isfinite(score):
+                continue
+            records.append(
+                {
+                    "signal_at": signal_at,
+                    "label_end": label_end,
+                    "available_at": available,
+                    "asset": asset,
+                    "score": float(score),
+                    "return": float(np.prod(1 + values) - 1),
+                    "horizon_sessions": horizon,
+                }
+            )
+    return pd.DataFrame(
+        records,
+        columns=[
+            "signal_at",
+            "label_end",
+            "available_at",
+            "asset",
+            "score",
+            "return",
+            "horizon_sessions",
+        ],
+    )
+
+
 def _exposure_availability(rows, cutoff, fields):
     """Honor explicitly supplied per-feature and underlying price availability."""
     latest = cutoff
@@ -290,9 +338,11 @@ def _pipeline_snapshot(rows, cutoff, pipeline, history):
 
 def allocation_risk_inputs(item, symbols, risk):
     """Convert active bounds to absolute bounds; industry caps use one-hot X."""
+    model = item.get("model")
+    # Keep complete exposures: holdings and benchmark may lie outside candidates.
+    symbols = list(model.exposures.index) if model is not None else list(item["classifications"])
     exposures = pd.DataFrame(index=symbols)
     bounds = {}
-    model = item.get("model")
     if model is not None:
         settings = item["settings"]
         bounds = {key: tuple(value) for key, value in settings["factor_bounds"].items()}
@@ -316,12 +366,40 @@ def allocation_risk_inputs(item, symbols, risk):
                 raise ValueError("Industry constraint name collides with risk factor")
             exposures[factor] = [float(groups[symbol] == group) for symbol in symbols]
             bounds[factor] = (0.0, risk["max_industry_weight"])
+    snapshot = None
+    if model is not None:
+        import hashlib
+        import json
+
+        from quant_portfolio.risk_snapshot import RiskSnapshot
+
+        snapshot = RiskSnapshot(
+            estimated_at=model.as_of,
+            available_at=model.as_of,
+            horizon_sessions=model.diagnostics.estimation.get("risk_horizon", 1),
+            annualization=settings["annualization"],
+            model_version="barra-style-default-v1",
+            input_digest=hashlib.sha256(
+                json.dumps(
+                    model.to_dict(include_asset_covariance=False), sort_keys=True, default=str
+                ).encode()
+            ).hexdigest(),
+            exposures=model.exposures,
+            factor_covariance=model.factor_covariance,
+            specific_variance=model.specific_variances,
+            benchmark=pd.Series(settings["benchmark_weights"], dtype=float)
+            if settings["benchmark_weights"]
+            else None,
+        )
     return {
         "factor_exposures": exposures if bounds else None,
         "factor_bounds": bounds or None,
-        "covariance_override": model.asset_covariance.loc[symbols, symbols]
+        "factor_bounds_absolute": True,
+        "risk_snapshot": snapshot,
+        "max_tracking_error_override": item["settings"].get("max_tracking_error")
         if model is not None
         else None,
+        "decision_at": model.as_of if model is not None else None,
     }
 
 
@@ -334,7 +412,7 @@ def check_model_target(item, weights, *, cash_policy_reason=None):
         weights={key: float(value) for key, value in weights.items()},
         benchmark_weights=settings["benchmark_weights"] or None,
     )
-    full_cash = not any(float(value) != 0 for value in weights.values())
+    full_cash = not any(float(value) != 0 for _, value in weights.items())
     if full_cash:
         cash_policy_reason = cash_policy_reason or "full_cash_state"
     else:

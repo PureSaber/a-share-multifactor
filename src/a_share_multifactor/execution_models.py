@@ -15,6 +15,40 @@ def decimal(value: FixedPoint) -> Decimal:
     return Decimal(value.units).scaleb(-value.scale)
 
 
+def commission_increment(notional, prior, rate, floor):
+    """Exact order-level commission shared by target quotes and partial fills."""
+    paid = max(prior * rate, floor) if prior else Decimal(0)
+    return max((prior + notional) * rate, floor) - paid
+
+
+def quote_target_trade(spec, quantity, mark, costs, at, *, money_scale=8):
+    """Known-price estimate; next-bar price and availability remain unknown."""
+    if not quantity:
+        return Decimal(0), Decimal(0)
+    direction = 1 if quantity > 0 else -1
+    tick = decimal(spec.price_tick)
+    slipped = mark * (1 + Decimal(direction) * Decimal(str(costs.slippage)))
+    rounding = ROUND_CEILING if direction > 0 else ROUND_FLOOR
+    execution_price = (slipped / tick).to_integral_value(rounding=rounding) * tick
+    notional = Decimal(abs(quantity)) * execution_price * decimal(spec.contract_multiplier)
+    commission = commission_increment(
+        notional, Decimal(0), Decimal(str(costs.commission)), Decimal(str(costs.min_commission))
+    )
+    tax = (
+        Decimal(str(stamp_duty_rate(costs, at)))
+        if quantity < 0 and spec.asset_class is AssetClass.EQUITY
+        else Decimal(0)
+    )
+    from decimal import ROUND_HALF_UP
+
+    fee = (commission + tax * notional).quantize(
+        Decimal(1).scaleb(-money_scale), rounding=ROUND_HALF_UP
+    )
+    change = -Decimal(direction) * notional - fee
+    friction = -change - Decimal(quantity) * mark
+    return change, friction
+
+
 class ConfiguredAShareRiskGate(RuleBookRiskGate):
     """Charge the configured commission floor once per order, across partial fills.
 
@@ -42,8 +76,7 @@ class ConfiguredAShareRiskGate(RuleBookRiskGate):
         rate = Decimal(spec.metadata["commission_rate"])
         floor = Decimal(spec.metadata.get("min_commission", "0"))
         prior = self._commission_notionals.get(order.order_id, Decimal(0))
-        paid = max(prior * rate, floor) if prior else Decimal(0)
-        commission = max((prior + notional) * rate, floor) - paid
+        commission = commission_increment(notional, prior, rate, floor)
         stamp = Decimal(0)
         if fill.side is Side.SELL and spec.asset_class is AssetClass.EQUITY:
             if spec.metadata.get("statutory_stamp_tax") == "true":
