@@ -701,6 +701,17 @@ class _TargetWeightStrategy:
                 ),
             )
             payload = result.to_dict()
+            payload["cost_forecast"] = {
+                "nav": str(nav),
+                "turnover": str(turnover),
+                "estimated_cost_amount": (
+                    None
+                    if cost_per_turnover is None
+                    else str(nav * turnover * Decimal(str(cost_per_turnover)))
+                ),
+                "rate_per_turnover": cost_per_turnover,
+                "basis": "configured comprehensive turnover-cost budget, not fees-only",
+            }
             if self.risk_schedule:
                 from a_share_multifactor.research_risk import check_model_target
 

@@ -87,6 +87,8 @@ def test_candidate_ledgers_cost_stress_and_data_cache(recipe, tmp_path):
     assert base["metrics"]["fills"] > 0
     assert stress["metrics"]["cost_total"] > base["metrics"]["cost_total"]
     assert stress["metrics"]["total_return"] < base["metrics"]["total_return"]
+    stress_diagnostics = json.loads((tmp_path / "stress/execution_diagnostics.json").read_text())
+    assert stress_diagnostics["cost_assumptions"]["commission"] == 2 * recipe["costs"]["commission"]
     assert len(executor._features) == 1
     assert base["comparison"]["start"] == recipe["interval"]["start"]
     json.dumps(base, allow_nan=False)
