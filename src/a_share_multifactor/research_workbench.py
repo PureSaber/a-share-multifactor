@@ -950,6 +950,7 @@ class EquityResearchExecutor:
         rejected = rejected[rejected.to_status.isin(["rejected", "expired", "cancelled"])]
         execution_diagnostics = {
             "schema_version": "asm.research-execution-diagnostics/v1",
+            "cost_assumptions": dict(recipe["costs"]),
             "allocation_decisions": list(replay.allocation_decisions),
             "risk_checks": list(replay.risk_checks),
             "runtime_risk_events": list(replay.runtime_risk_events),

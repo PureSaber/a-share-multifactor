@@ -679,7 +679,21 @@ class _TargetWeightStrategy:
                 classifications=self.risk_schedule.get(event.trading_day, {}).get(
                     "classifications", self.risk_limits.get("classifications", {})
                 ),
-                limits=DecisionPortfolioLimits.from_mapping(self.risk_limits),
+                limits=DecisionPortfolioLimits.from_mapping(
+                    {
+                        key: value
+                        for key, value in self.risk_limits.items()
+                        if key
+                        not in {
+                            "max_drawdown",
+                            "drawdown_action",
+                            "exposure_breach_action",
+                            "estimated_cost_rate_per_turnover",
+                            "classifications",
+                            "industry_field",
+                        }
+                    }
+                ),
                 estimated_cost_rate=(
                     None
                     if cost_per_turnover is None
@@ -714,6 +728,16 @@ class _TargetWeightStrategy:
                 "session": event.trading_day.isoformat(),
                 "checked_at": pd.Timestamp(event.available_at).isoformat(),
                 "stage": stage,
+                # Preserve the executable target after the portfolio gate. A
+                # rejected proposal is not an order or a zero-position target.
+                **(
+                    {
+                        "execution_target": dict(current if payload["has_critical"] else target),
+                        "target_admitted": not payload["has_critical"],
+                    }
+                    if stage == "target"
+                    else {}
+                ),
                 **payload,
             }
         )
@@ -796,6 +820,8 @@ class _TargetWeightStrategy:
                     "checked_at": pd.Timestamp(event.available_at).isoformat(),
                     action_field: action,
                     "halt_reason": self._risk_halt_reason,
+                    "execution_target": dict(current) if action == "halt" else {},
+                    "target_admitted": action == "liquidate",
                     "drawdown": 1 - nav / self._peak_nav,
                     "has_critical": True,
                     "alerts": [
