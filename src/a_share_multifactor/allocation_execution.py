@@ -154,6 +154,7 @@ def executable_allocation(strategy, plan, snapshot, nav):
         lots=lots,
         cash=cash,
         nav=nav,
+        non_cash_assets=gate.ledger.dividend_receivable_balance("CNY"),
         quote_trade=quote,
         constraint_residuals=check,
         max_invested=plan["invested_limit"],
