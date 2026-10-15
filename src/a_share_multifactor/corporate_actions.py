@@ -38,7 +38,7 @@ def action_events(
             raise ValueError("Invalid corporate-action amounts")
         dates = sorted(pd.to_datetime(raw.loc[raw.symbol == row.symbol, "date"]).unique())
         previous = [pd.Timestamp(x) for x in dates if pd.Timestamp(x) < row.ex_date]
-        if (
+        if (cash or ratio != 1) and (
             pd.isna(row.announced_date)
             or row.announced_date >= row.ex_date
             or not previous
@@ -60,7 +60,8 @@ def action_events(
             return FixedPoint(int(scaled), 8)
 
         deferred_cash = bool(cash and row.pay_date != row.ex_date)
-        events.append(
+        holder_events = [] if cash == 0 and ratio == 1 else events
+        holder_events.append(
             CorporateActionEvent(
                 event_id=(row.event_id + ":entitlement" if deferred_cash else row.event_id),
                 instrument_id=row.symbol,
@@ -77,7 +78,7 @@ def action_events(
                 effective_date=row.ex_date.date(),
                 cash_amount=fixed(cash) if cash else None,
                 currency="CNY" if cash else None,
-                ratio=fixed(ratio) if ratio != 1 else None,
+                ratio=fixed(ratio) if ratio != 1 or cash == 0 else None,
             )
         )
         if deferred_cash and row.pay_date <= end:
@@ -101,7 +102,32 @@ def action_events(
                     currency="CNY",
                 )
             )
-        by_key[(row.symbol, row.ex_date)] = (float(cash), float(ratio))
+        reference_cash = getattr(row, "adjustment_cash_per_share", None)
+        reference_ratio = getattr(row, "adjustment_share_ratio", None)
+        overridden = pd.notna(reference_cash) or pd.notna(reference_ratio)
+        if overridden:
+            source = getattr(row, "adjustment_reference_source", None)
+            sha = getattr(row, "adjustment_reference_sha256", None)
+            if (
+                not isinstance(source, str)
+                or not source.strip()
+                or not isinstance(sha, str)
+                or len(sha) != 64
+                or any(c not in "0123456789abcdef" for c in sha)
+            ):
+                raise ValueError("adjustment reference requires source evidence and SHA-256")
+        reference_cash = Decimal(str(reference_cash)) if pd.notna(reference_cash) else cash
+        reference_ratio = Decimal(str(reference_ratio)) if pd.notna(reference_ratio) else ratio
+        if (
+            not reference_cash.is_finite()
+            or not reference_ratio.is_finite()
+            or reference_cash < 0
+            or reference_ratio <= 0
+        ):
+            raise ValueError("invalid exchange adjustment reference")
+        # Differential distributions can use a diluted exchange reference while
+        # entitled shareholders receive the full cash/share distribution above.
+        by_key[(row.symbol, row.ex_date)] = (float(reference_cash), float(reference_ratio))
     check = raw[(raw.date >= start) & (raw.date <= end)].merge(
         adjusted[["symbol", "date", "close"]],
         on=["symbol", "date"],
