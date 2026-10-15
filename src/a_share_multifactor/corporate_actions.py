@@ -2,11 +2,65 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 
 import numpy as np
 import pandas as pd
 from quant_data_kit import CorporateActionEvent, FixedPoint
+
+
+def resolve_share_event(event, rule, *, account_id, recorded_snapshots):
+    """Resolve an ordinary-holder distribution using this account's record date.
+
+    Strict evidence and sensitivity assumptions are carried in the native event;
+    neither changes instrument precision or invents fractional cash payments.
+    """
+    from quant_data_kit.share_entitlements import ShareEntitlement
+
+    record_date = pd.Timestamp(rule["record_date"]).date()
+    eligible = [
+        s
+        for s in recorded_snapshots
+        if pd.Timestamp(s.event_time).tz_convert("Asia/Shanghai").date() == record_date
+    ]
+    if not eligible:
+        raise ValueError("share entitlement requires the actual record-date account snapshot")
+    snapshot = max(eligible, key=lambda s: s.event_time)
+    quantity = snapshot.positions.get(event.instrument_id, FixedPoint(0, 0))
+    ratio = Decimal(str(rule["ordinary_additional_ratio"]))
+    precision = max(0, -ratio.as_tuple().exponent)
+    status = rule.get("evidence_status", "unresolved")
+    confirmed = rule.get("confirmed_quantity")
+    if confirmed is not None and Decimal(str(confirmed)) != int(confirmed):
+        raise ValueError("confirmed share quantity must be an exact integer")
+    reference = rule.get("reference_price")
+    reference_fp = None
+    if reference is not None:
+        value = Decimal(str(reference))
+        scale = max(0, -value.as_tuple().exponent)
+        reference_fp = FixedPoint(int(value.scaleb(scale)), scale)
+    terms = ShareEntitlement(
+        entitlement_id=rule["entitlement_id"],
+        account_id=account_id,
+        record_date=record_date,
+        eligible_quantity=quantity,
+        ordinary_additional_ratio=FixedPoint(int(ratio.scaleb(precision)), precision),
+        known_at=pd.Timestamp(rule["known_at"]).tz_convert("UTC").to_pydatetime(),
+        credit_at=pd.Timestamp(rule["credit_at"]).tz_convert("UTC").to_pydatetime(),
+        sellable_date=pd.Timestamp(rule["sellable_date"]).date(),
+        evidence_source=rule["evidence_source"],
+        evidence_sha256=rule["evidence_sha256"],
+        evidence_status=status,
+        fractional_rule=rule["fractional_rule"],
+        confirmed_quantity=None if confirmed is None else FixedPoint(int(confirmed), 0),
+        reference_price=reference_fp,
+    )
+    if confirmed is not None and rule.get("confirmed_account_id") != account_id:
+        raise ValueError("confirmed registry quantity must identify the exact account")
+    return replace(
+        event, event_id=terms.entitlement_id + ":" + account_id, ratio=None, share_entitlement=terms
+    )
 
 
 def action_events(

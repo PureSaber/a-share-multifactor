@@ -131,6 +131,61 @@ def test_fractional_entitlement_is_annotated_and_not_rounded(tmp_path):
     assert caught.value.occurred_at == events[0].available_at
 
 
+@pytest.mark.parametrize("branch, added", [("sensitivity_floor", 200), ("sensitivity_ceil", 201)])
+def test_share_rule_uses_record_date_account_and_can_liquidate_odd_remainder(
+    tmp_path, branch, added
+):
+    dates, raw, adjusted, actions, config, catalog = distribution_fixture(
+        tmp_path, ratio="1.400595"
+    )
+    events = action_events(actions, raw, adjusted, dates[0], dates[-1])
+    extra = raw.iloc[[-1]].copy()
+    extra["date"] = dates[-1] + pd.offsets.BDay(1)
+    raw = pd.concat([raw, extra], ignore_index=True)
+    rule = {
+        "entitlement_id": "distribution",
+        "record_date": str(dates[1].date()),
+        "ordinary_additional_ratio": "0.400595",
+        "known_at": dates[0].tz_localize("Asia/Shanghai").isoformat(),
+        "credit_at": events[0].available_at.isoformat(),
+        "sellable_date": str(dates[2].date()),
+        "evidence_source": "synthetic-issuer",
+        "evidence_sha256": "a" * 64,
+        "fractional_rule": "largest_fraction",
+        "evidence_status": branch,
+        "reference_price": "6.50",
+    }
+    schedule = {dates[0].date(): {"600036": 500}, dates[3].date(): {}}
+    kwargs = {
+        "catalog_path": catalog,
+        "corporate_actions": events,
+        "target_schedule": schedule,
+        "share_rules": {"distribution": rule},
+        "snapshot_frequency": "event",
+    }
+    replay = _replay(raw, config, "share-branch", **kwargs)
+    action_positions = replay.frames["positions"]
+    action_positions = action_positions[
+        pd.to_datetime(action_positions.event_time, utc=True).eq(events[0].available_at)
+    ]
+    assert len(action_positions) == 1
+    assert Decimal(int(action_positions.iloc[0].mark_price_units)).scaleb(
+        -int(action_positions.iloc[0].mark_price_scale)
+    ) == Decimal("6.50")
+    assert all(q.units == 0 for q in replay.ledger.snapshot().positions.values())
+    sold = replay.frames["fills"].query('side == "sell"')
+    assert int(sold.quantity_units.sum()) == 500 + added
+    assert replay.ledger.snapshot().cash_balances["CNY"].to_decimal() == (
+        Decimal(5500) + Decimal(500 + added) * Decimal("9.2")
+    )
+    repeated = _replay(raw, config, "share-branch", **kwargs)
+    assert repeated.ledger.snapshot() == replay.ledger.snapshot()
+    rule["evidence_status"] = "unresolved"
+    with pytest.raises(ReplayInputError) as caught:
+        _replay(raw, config, "strict-share", **kwargs)
+    assert caught.value.diagnostics["reason"] == "entitlement_unresolved"
+
+
 def test_initial_budget_retries_but_never_resets_after_publication(monkeypatch):
     from a_share_multifactor import allocation_execution
 
