@@ -71,6 +71,9 @@ def executable_allocation(strategy, plan, snapshot, nav):
         if asset in fixed_targets:
             upper[asset] = lower[asset]
     costs = strategy.costs
+    objective_costs = plan.get("objective_costs", True)
+    if type(objective_costs) is not bool:
+        raise ValueError("objective_costs must be an explicit boolean")
     from a_share_multifactor.trading_costs import stamp_duty_rate
 
     buy_rates = pd.Series({a: costs.commission + costs.slippage for a in traded_assets})
@@ -111,8 +114,8 @@ def executable_allocation(strategy, plan, snapshot, nav):
         decision_at=snapshot.event_time,
         lower_bounds=pd.Series(lower),
         upper_bounds=pd.Series(upper),
-        buy_costs=buy_rates,
-        sell_costs=sell_rates,
+        buy_costs=buy_rates if objective_costs else buy_rates * 0,
+        sell_costs=sell_rates if objective_costs else sell_rates * 0,
         **kwargs,
     )
     validation = result.validation_context
@@ -174,6 +177,7 @@ def executable_allocation(strategy, plan, snapshot, nav):
         timeout_seconds=remaining,
     )
     diagnostics = {**result.diagnostics, "execution": repaired.diagnostics}
+    diagnostics["objective_includes_cost_estimates"] = objective_costs
     diagnostics["rebalance_seconds"] = perf_counter() - started
     if risk is not None:
         w = repaired.weights.reindex(assets, fill_value=0).to_numpy()

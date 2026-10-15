@@ -18,11 +18,13 @@ import pandas as pd
 from quant_data_kit import (
     AssetClass,
     BarEvent,
+    CorporateActionEvent,
     FixedPoint,
     InstrumentSpec,
     StatusEvent,
     SymbolMapping,
 )
+from quant_data_kit.exceptions import ValidationError as DataValidationError
 from quant_execution import (
     DeterministicBroker,
     DeterministicRunEngine,
@@ -571,6 +573,19 @@ class _TargetWeightStrategy:
         from quant_portfolio import research_allocation_weights, validate_research_allocation
 
         plan = self.allocation_schedule[day]
+        if "initial_max_turnover" in plan:
+            initial = plan["initial_max_turnover"]
+            if (
+                isinstance(initial, bool)
+                or not isinstance(initial, (int, float))
+                or not 0 <= initial <= 2
+            ):
+                raise ValueError("initial_max_turnover must be between zero and two")
+            previously_allocated = any(
+                decision.get("targets") for decision in self._allocation_decisions
+            )
+            if not previously_allocated and not any(q.units for q in snapshot.positions.values()):
+                plan = {**plan, "allocation": {**plan["allocation"], "max_turnover": initial}}
         scores = plan["scores"]
         settings = validate_research_allocation(plan["allocation"])
         diagnostics = {}
@@ -879,7 +894,9 @@ class _TargetWeightStrategy:
 
             try:
                 target = self._allocation_target(event.trading_day, snapshot, nav_decimal)
-            except OptimizationError as exc:
+            except (OptimizationError, ValueError) as exc:
+                status = exc.status if isinstance(exc, OptimizationError) else "input_unavailable"
+                diagnostics = exc.diagnostics if isinstance(exc, OptimizationError) else {}
                 self._deferred_targets = {}
                 self._target_active = False
                 self._allocation_decisions.append(
@@ -887,8 +904,8 @@ class _TargetWeightStrategy:
                         "session": event.trading_day.isoformat(),
                         "nav": nav,
                         "mode": self.allocation_schedule[event.trading_day]["allocation"]["mode"],
-                        "status": exc.status,
-                        "diagnostics": exc.diagnostics,
+                        "status": status,
+                        "diagnostics": diagnostics,
                         "error": str(exc),
                         "published": False,
                     }
@@ -900,10 +917,10 @@ class _TargetWeightStrategy:
                         "has_critical": True,
                         "alerts": [
                             {
-                                "rule_id": "portfolio.optimizer_" + exc.status,
+                                "rule_id": "portfolio.optimizer_" + status,
                                 "severity": "critical",
                                 "message": str(exc),
-                                "details": exc.diagnostics,
+                                "details": diagnostics,
                             }
                         ],
                     }
@@ -1010,15 +1027,44 @@ class _TargetWeightStrategy:
         )
 
 
+class ReplayInputError(ValueError):
+    """An evidenced event the exact account cannot process; the run is rolled back."""
+
+    def __init__(self, event, reason):
+        self.occurred_at = event.available_at
+        self.instrument_id = event.instrument_id
+        super().__init__(f"{event.instrument_id} at {event.available_at.isoformat()}: {reason}")
+
+
+def _replay_with_input_errors(callback, *args, **kwargs):
+    try:
+        return callback(*args, **kwargs)
+    except Exception as exc:
+        # QExec has already restored its checkpoint before wrapping this error.
+        # Preserve the typed evidence without bypassing its atomic rollback.
+        cause = exc.__cause__
+        if isinstance(cause, ReplayInputError):
+            raise cause from exc
+        raise
+
+
 class _RecordingLedger(ExactAccountLedger):
     """Capture snapshots from the exact ledger instance used by QExec."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self, *args: Any, recording_times=None, cache_risk_views=False, **kwargs: Any
+    ) -> None:
+        self._recording_times = recording_times
+        self._cache_risk_views = cache_risk_views
+        self._read_views = {}
+        self._view_mutation_depth = 0
         self._recorded_snapshots: dict[datetime, Any] = {}
         super().__init__(*args, **kwargs)
 
     def reset(self, *, opened_at: datetime | None = None) -> None:
+        self._read_views.clear()
         super().reset(opened_at=opened_at)
+        self._read_views.clear()
         self._recorded_snapshots = {}
 
     def capture_state(self) -> dict[str, object]:
@@ -1027,27 +1073,81 @@ class _RecordingLedger(ExactAccountLedger):
         return state
 
     def restore_state(self, state: dict[str, object]) -> None:
+        self._read_views.clear()
         base_state = dict(state)
         recorded_snapshots = base_state.pop("recorded_snapshots")
         super().restore_state(base_state)
+        self._read_views.clear()
         self._recorded_snapshots = recorded_snapshots.copy()
 
+    def _read_view(self, kind, at, callback):
+        if not self._cache_risk_views or self._view_mutation_depth:
+            return callback(at)
+        key = (kind, at)
+        if key not in self._read_views:
+            self._read_views[key] = callback(at)
+        return self._read_views[key]
+
+    def snapshot(self, event_time=None):
+        return self._read_view("account", event_time, super().snapshot)
+
+    def portfolio_risk_snapshot(self, event_time):
+        return self._read_view("portfolio", event_time, super().portfolio_risk_snapshot)
+
+    def _mutate_views(self, callback, *args, **kwargs):
+        self._read_views.clear()
+        self._view_mutation_depth += 1
+        try:
+            return callback(*args, **kwargs)
+        finally:
+            self._view_mutation_depth -= 1
+            self._read_views.clear()
+
+    def set_fx_rate(self, *args, **kwargs):
+        return self._mutate_views(super().set_fx_rate, *args, **kwargs)
+
+    def book_external_cash(self, *args, **kwargs):
+        return self._mutate_views(super().book_external_cash, *args, **kwargs)
+
+    def book_opening_position(self, *args, **kwargs):
+        return self._mutate_views(super().book_opening_position, *args, **kwargs)
+
+    def apply_dividend_lifecycle(self, *args, **kwargs):
+        return self._mutate_views(super().apply_dividend_lifecycle, *args, **kwargs)
+
+    def apply_corporate_action(self, *args, **kwargs):
+        return self._mutate_views(super().apply_corporate_action, *args, **kwargs)
+
     def _record(self, event_time: datetime) -> None:
+        if self._recording_times is not None and event_time not in self._recording_times:
+            return
         snapshot = self.snapshot(event_time)
         self._recorded_snapshots[snapshot.event_time] = snapshot
 
     def observe_market(self, event: Any, **kwargs: Any) -> Any:
-        result = super().observe_market(event, **kwargs)
+        if event.event_id.startswith("research-input-guard:"):
+            quantity = self.snapshot().positions.get(event.instrument_id)
+            if quantity is not None and quantity.units:
+                raise ReplayInputError(event, event.reason)
+        result = self._mutate_event(super().observe_market, event, **kwargs)
         self._record(event.available_at)
         return result
 
+    def _mutate_event(self, callback, event, **kwargs):
+        try:
+            return self._mutate_views(callback, event, **kwargs)
+        except (ValueError, DataValidationError) as exc:
+            if isinstance(event, CorporateActionEvent):
+                raise ReplayInputError(event, str(exc)) from exc
+            raise
+
     def apply(self, event: Any, **kwargs: Any) -> Any:
-        result = super().apply(event, **kwargs)
+        result = self._mutate_event(super().apply, event, **kwargs)
         self._record(event.event_time)
         return result
 
     def apply_with_trading_day(self, event: Any, **kwargs: Any) -> Any:
-        result = super().apply_with_trading_day(event, **kwargs)
+        result = self._mutate_event(super().apply_with_trading_day, event, **kwargs)
         self._record(event.event_time)
         return result
 
@@ -1129,9 +1229,14 @@ def _replay(
     account_id: str = _ACCOUNT_ID,
     strategy_id: str = _STRATEGY_ID,
     segment_starts: tuple = (),
+    snapshot_frequency: str = "event",
+    input_guards: tuple = (),
+    cache_risk_views: bool = False,
 ) -> CertifiedReplay:
     if not account_id.strip() or not strategy_id.strip():
         raise ValueError("account_id and strategy_id must be non-empty")
+    if snapshot_frequency not in {"event", "daily"}:
+        raise ValueError("snapshot_frequency must be event or daily")
     validate_execution_profile(scored_panel, config)
     costs = config.costs
     replay_symbols = sorted(
@@ -1159,18 +1264,45 @@ def _replay(
         for symbol, spec in instruments.items()
     }
     bars = _build_events(scored_panel, instruments)
+    guard_events = []
+    for guard in input_guards:
+        at = pd.Timestamp(guard["available_at"])
+        if at.tzinfo is None or guard["asset"] not in instruments or not guard["reason"]:
+            raise ValueError("invalid evidenced research input guard")
+        at = at.tz_convert("UTC")
+        day = at.tz_convert("Asia/Shanghai").date()
+        guard_events.append(
+            StatusEvent(
+                event_id=f"research-input-guard:{guard['asset']}:{day}",
+                instrument_id=guard["asset"],
+                event_time=at.to_pydatetime(),
+                available_at=at.to_pydatetime(),
+                received_at=at.to_pydatetime(),
+                source=guard["source"],
+                trading_day=day,
+                session_id=f"CN-A-SHARE:{day}",
+                sequence=0,
+                status="research_input_unverified",
+                reason=guard["reason"],
+            )
+        )
     events = tuple(
         sorted(
-            (*bars, *status_events, *corporate_actions),
+            (*bars, *status_events, *corporate_actions, *guard_events),
             key=lambda e: (e.available_at, e.instrument_id),
         )
     )
+    last_daily_event = {}
+    for event in events:
+        last_daily_event[event.trading_day] = event.available_at
     ledger = _RecordingLedger(
         account_id=account_id,
         base_currency="CNY",
         instruments=instruments,
         initial_cash={"CNY": _fixed(config.costs.initial_capital, 2)},
         money_scale=_MONEY_SCALE,
+        recording_times=set(last_daily_event.values()) if snapshot_frequency == "daily" else None,
+        cache_risk_views=cache_risk_views,
     )
     broker = DeterministicBroker()
     from quant_risk_monitor.cross_asset import (
@@ -1250,13 +1382,14 @@ def _replay(
         ]
         if sum(map(len, segments)) != len(events):
             raise ValueError("continuous boundaries do not cover every market event")
-        result = engine.replay_segments(segments, seed=0)
+        result = _replay_with_input_errors(engine.replay_segments, segments, seed=0)
     else:
-        result = engine.replay(events, seed=0)
+        result = _replay_with_input_errors(engine.replay, events, seed=0)
     artifacts = engine.artifacts
     if artifacts is None:
         raise RuntimeError("QExec replay did not produce artifacts")
     snapshots = ledger.recorded_snapshots
+    snapshot_times = {snapshot.event_time for snapshot in snapshots}
     mark_by_time: dict[datetime, dict[str, FixedPoint]] = {}
     current_marks: dict[str, FixedPoint] = {}
     for event in events:
@@ -1266,7 +1399,8 @@ def _replay(
             current_marks[event.instrument_id] = _fixed(
                 _decimal(current_marks[event.instrument_id]) / _decimal(event.ratio), _MONEY_SCALE
             )
-        mark_by_time[event.available_at] = current_marks.copy()
+        if event.available_at in snapshot_times:
+            mark_by_time[event.available_at] = current_marks.copy()
     snapshot_rows: list[dict[str, Any]] = []
     position_rows: list[dict[str, Any]] = []
     margin_rows: list[dict[str, Any]] = []
@@ -1279,6 +1413,8 @@ def _replay(
             fee.amount
         )
     cumulative_fees = Decimal(0)
+    fee_times = iter(sorted(fee_by_time.items()))
+    next_fee = next(fee_times, None)
     for snapshot in snapshots:
         event_time = snapshot.event_time
         cash_value = sum((_decimal(value) for value in snapshot.cash_balances.values()), Decimal(0))
@@ -1318,7 +1454,9 @@ def _replay(
         nav = _decimal(snapshot.nav)
         net_return = float(nav / previous_nav - 1) if previous_nav else 0.0
         previous_nav = nav
-        cumulative_fees += fee_by_time.get(event_time, Decimal(0))
+        while next_fee is not None and next_fee[0] <= event_time:
+            cumulative_fees += next_fee[1]
+            next_fee = next(fee_times, None)
         gross_nav = nav + cumulative_fees
         gross_return = float(gross_nav / previous_gross_nav - 1) if previous_gross_nav else 0.0
         previous_gross_nav = gross_nav

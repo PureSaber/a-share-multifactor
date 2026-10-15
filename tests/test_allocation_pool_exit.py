@@ -11,7 +11,8 @@ from a_share_multifactor.config import CostsConfig
 
 
 @pytest.mark.parametrize("status", ["open", "suspended"])
-def test_excluded_holding_exits_unless_known_untradable(status):
+@pytest.mark.parametrize("objective_costs", [True, False])
+def test_excluded_holding_exits_unless_known_untradable(status, objective_costs):
     spec = SimpleNamespace(
         metadata={"lot_size": "100"},
         asset_class=AssetClass.ETF,
@@ -30,9 +31,10 @@ def test_excluded_holding_exits_unless_known_untradable(status):
     strategy = SimpleNamespace(
         risk_gate=gate,
         _closing_prices={"A": FixedPoint(10, 0), "B": FixedPoint(10, 0)},
-        costs=CostsConfig(commission=0, min_commission=0, stamp_tax=0, slippage=0),
+        costs=CostsConfig(commission=0, min_commission=5, stamp_tax=0, slippage=0),
     )
     plan = {
+        "objective_costs": objective_costs,
         "scores": pd.Series({"B": 1.0}),
         "trailing_returns": None,
         "invested_limit": 0.8,
@@ -56,3 +58,5 @@ def test_excluded_holding_exits_unless_known_untradable(status):
     assert targets.get("A", 0) == expected
     assert weights.A == pytest.approx(expected / 200, abs=1e-7)
     assert Decimal(diagnostics["execution"]["cash"]) >= 0
+    assert diagnostics["objective_includes_cost_estimates"] is objective_costs
+    assert Decimal(diagnostics["execution"]["costs"]) == (10 if status == "open" else 0)
