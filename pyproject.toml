@@ -50,6 +50,9 @@ asm-disclosures = "a_share_multifactor.disclosures:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+a_share_multifactor = ["data/*.csv"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]

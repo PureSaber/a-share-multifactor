@@ -48,9 +48,7 @@ from a_share_multifactor.execution_models import (
 from a_share_multifactor.performance import return_statistics
 from a_share_multifactor.quantile_backtest import BacktestResult, _assign_quantiles
 
-_CATALOG_PATH = (
-    Path(__file__).resolve().parents[2] / "data" / "fixtures" / "a_share_instrument_catalog_v1.csv"
-)
+_CATALOG_PATH = Path(__file__).resolve().parent / "data" / "a_share_instrument_catalog_v1.csv"
 _STRATEGY_ID = "a-share-multifactor-qexec"
 _ACCOUNT_ID = "a-share-multifactor-account"
 _MONEY_SCALE = 8

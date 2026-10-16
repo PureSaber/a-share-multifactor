@@ -19,6 +19,7 @@ outputs/**
 *.parquet
 *.csv
 !data/fixtures/a_share_instrument_catalog_v1.csv
+!src/a_share_multifactor/data/a_share_instrument_catalog_v1.csv
 _stock_list.json
 .idea/
 .vscode/
