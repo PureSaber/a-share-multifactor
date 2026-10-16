@@ -48,9 +48,7 @@ from a_share_multifactor.execution_models import (
 from a_share_multifactor.performance import return_statistics
 from a_share_multifactor.quantile_backtest import BacktestResult, _assign_quantiles
 
-_CATALOG_PATH = (
-    Path(__file__).resolve().parents[2] / "data" / "fixtures" / "a_share_instrument_catalog_v1.csv"
-)
+_CATALOG_PATH = Path(__file__).resolve().parent / "data" / "a_share_instrument_catalog_v1.csv"
 _STRATEGY_ID = "a-share-multifactor-qexec"
 _ACCOUNT_ID = "a-share-multifactor-account"
 _MONEY_SCALE = 8
@@ -570,7 +568,11 @@ class _TargetWeightStrategy:
         return tuple(self._retry_diagnostics)
 
     def _allocation_target(self, day: date, snapshot, nav: Decimal) -> dict[str, int]:
-        from quant_portfolio import research_allocation_weights, validate_research_allocation
+        from quant_portfolio import (
+            AllocationInputError,
+            research_allocation_weights,
+            validate_research_allocation,
+        )
 
         plan = self.allocation_schedule[day]
         if "initial_max_turnover" in plan:
@@ -596,9 +598,11 @@ class _TargetWeightStrategy:
         }
         missing_current_marks = sorted(set(held) - set(self._closing_prices))
         if missing_current_marks:
-            raise ValueError(
+            raise AllocationInputError(
                 "Current-NAV allocation is missing a close for held positions: "
-                f"{missing_current_marks}"
+                f"{missing_current_marks}",
+                reason="missing_held_mark",
+                assets=missing_current_marks,
             )
         current_weights = pd.Series(
             {
@@ -609,7 +613,16 @@ class _TargetWeightStrategy:
         )
         if scores.empty or plan["invested_limit"] <= 0:
             if float(current_weights.abs().sum()) > float(settings["max_turnover"]) + 1e-10:
-                raise ValueError("allocation.max_turnover is infeasible for liquidation")
+                from quant_portfolio import OptimizationError
+
+                raise OptimizationError(
+                    "infeasible",
+                    "allocation.max_turnover is infeasible for liquidation",
+                    {
+                        "stage": "continuous",
+                        "required_turnover": float(current_weights.abs().sum()),
+                    },
+                )
             weights = pd.Series(dtype=float)
             target = {}
         elif settings.get("protocol_version") == 2 or plan.get("risk_snapshot") is not None:
@@ -894,9 +907,9 @@ class _TargetWeightStrategy:
 
             try:
                 target = self._allocation_target(event.trading_day, snapshot, nav_decimal)
-            except (OptimizationError, ValueError) as exc:
-                status = exc.status if isinstance(exc, OptimizationError) else "input_unavailable"
-                diagnostics = exc.diagnostics if isinstance(exc, OptimizationError) else {}
+            except OptimizationError as exc:
+                status = exc.status
+                diagnostics = exc.serializable_diagnostics()
                 self._deferred_targets = {}
                 self._target_active = False
                 self._allocation_decisions.append(
@@ -1030,9 +1043,10 @@ class _TargetWeightStrategy:
 class ReplayInputError(ValueError):
     """An evidenced event the exact account cannot process; the run is rolled back."""
 
-    def __init__(self, event, reason):
+    def __init__(self, event, reason, diagnostics=None):
         self.occurred_at = event.available_at
         self.instrument_id = event.instrument_id
+        self.diagnostics = diagnostics or {"stage": "execution_input", "reason": str(reason)}
         super().__init__(f"{event.instrument_id} at {event.available_at.isoformat()}: {reason}")
 
 
@@ -1052,17 +1066,25 @@ class _RecordingLedger(ExactAccountLedger):
     """Capture snapshots from the exact ledger instance used by QExec."""
 
     def __init__(
-        self, *args: Any, recording_times=None, cache_risk_views=False, **kwargs: Any
+        self,
+        *args: Any,
+        recording_times=None,
+        cache_risk_views=False,
+        share_rules=None,
+        **kwargs: Any,
     ) -> None:
         self._recording_times = recording_times
         self._cache_risk_views = cache_risk_views
         self._read_views = {}
         self._view_mutation_depth = 0
+        self._share_rules = share_rules or {}
+        self._resolved_share_events = {}
         self._recorded_snapshots: dict[datetime, Any] = {}
         super().__init__(*args, **kwargs)
 
     def reset(self, *, opened_at: datetime | None = None) -> None:
         self._read_views.clear()
+        self._resolved_share_events.clear()
         super().reset(opened_at=opened_at)
         self._read_views.clear()
         self._recorded_snapshots = {}
@@ -1070,15 +1092,18 @@ class _RecordingLedger(ExactAccountLedger):
     def capture_state(self) -> dict[str, object]:
         state = super().capture_state()
         state["recorded_snapshots"] = self._recorded_snapshots.copy()
+        state["resolved_share_events"] = self._resolved_share_events.copy()
         return state
 
     def restore_state(self, state: dict[str, object]) -> None:
         self._read_views.clear()
         base_state = dict(state)
         recorded_snapshots = base_state.pop("recorded_snapshots")
+        resolved = base_state.pop("resolved_share_events")
         super().restore_state(base_state)
         self._read_views.clear()
         self._recorded_snapshots = recorded_snapshots.copy()
+        self._resolved_share_events = resolved.copy()
 
     def _read_view(self, kind, at, callback):
         if not self._cache_risk_views or self._view_mutation_depth:
@@ -1138,11 +1163,28 @@ class _RecordingLedger(ExactAccountLedger):
             return self._mutate_views(callback, event, **kwargs)
         except (ValueError, DataValidationError) as exc:
             if isinstance(event, CorporateActionEvent):
-                raise ReplayInputError(event, str(exc)) from exc
+                raise ReplayInputError(event, str(exc), getattr(exc, "diagnostics", None)) from exc
             raise
 
     def apply(self, event: Any, **kwargs: Any) -> Any:
+        if isinstance(event, CorporateActionEvent) and event.event_id in self._share_rules:
+            from a_share_multifactor.corporate_actions import resolve_share_event
+
+            original = event
+            try:
+                event = resolve_share_event(
+                    event,
+                    self._share_rules[event.event_id],
+                    account_id=self.account_id,
+                    recorded_snapshots=self.recorded_snapshots,
+                )
+            except ValueError as exc:
+                raise ReplayInputError(
+                    original, str(exc), getattr(exc, "diagnostics", None)
+                ) from exc
         result = self._mutate_event(super().apply, event, **kwargs)
+        if isinstance(event, CorporateActionEvent) and event.share_entitlement is not None:
+            self._resolved_share_events[event.event_id] = event
         self._record(event.event_time)
         return result
 
@@ -1232,6 +1274,7 @@ def _replay(
     snapshot_frequency: str = "event",
     input_guards: tuple = (),
     cache_risk_views: bool = False,
+    share_rules: dict | None = None,
 ) -> CertifiedReplay:
     if not account_id.strip() or not strategy_id.strip():
         raise ValueError("account_id and strategy_id must be non-empty")
@@ -1303,6 +1346,7 @@ def _replay(
         money_scale=_MONEY_SCALE,
         recording_times=set(last_daily_event.values()) if snapshot_frequency == "daily" else None,
         cache_risk_views=cache_risk_views,
+        share_rules=share_rules,
     )
     broker = DeterministicBroker()
     from quant_risk_monitor.cross_asset import (
@@ -1392,9 +1436,20 @@ def _replay(
     snapshot_times = {snapshot.event_time for snapshot in snapshots}
     mark_by_time: dict[datetime, dict[str, FixedPoint]] = {}
     current_marks: dict[str, FixedPoint] = {}
+    resolved_events = {
+        (e.instrument_id, e.available_at): e for e in ledger._resolved_share_events.values()
+    }
     for event in events:
+        if isinstance(event, CorporateActionEvent):
+            event = resolved_events.get((event.instrument_id, event.available_at), event)
         if isinstance(event, BarEvent):
             current_marks[event.instrument_id] = event.close_price
+        elif (
+            isinstance(event, CorporateActionEvent)
+            and event.share_entitlement is not None
+            and event.share_entitlement.reference_price is not None
+        ):
+            current_marks[event.instrument_id] = event.share_entitlement.reference_price
         elif getattr(event, "ratio", None) and event.instrument_id in current_marks:
             current_marks[event.instrument_id] = _fixed(
                 _decimal(current_marks[event.instrument_id]) / _decimal(event.ratio), _MONEY_SCALE
