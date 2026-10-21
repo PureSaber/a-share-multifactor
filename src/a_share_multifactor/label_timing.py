@@ -23,6 +23,9 @@ def label_available_at(panel: pd.DataFrame, target: str, date_col: str = "date")
         if (available < endpoint).any():
             raise ValueError("Label availability cannot precede its endpoint")
         return available
+    basis_column = f"{target}_basis"
+    if basis_column in panel and panel[basis_column].eq("next_open").any():
+        raise ValueError("next_open labels require explicit availability metadata")
     match = re.fullmatch(r"forward_return_([1-9][0-9]*)d", target)
     if not match:
         raise ValueError(f"Missing label availability column: {column}")

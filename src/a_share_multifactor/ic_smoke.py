@@ -10,6 +10,7 @@ import yaml
 
 from a_share_multifactor.factors import compute_factors
 from a_share_multifactor.ic_analysis import analyze_factors, export_ic_series
+from a_share_multifactor.preprocess import add_forward_return as label_returns
 
 
 def load_ic_smoke_config(path: Path | str) -> dict[str, Any]:
@@ -45,13 +46,11 @@ def add_forward_return(
     date_col: str = "date",
     symbol_col: str = "symbol",
     price_col: str = "close",
+    basis: str = "next_open",
 ) -> pd.DataFrame:
-    result = panel.copy()
-    col = f"forward_return_{days}d"
-    result[col] = result.groupby(symbol_col)[price_col].transform(
-        lambda s, d=days: s.shift(-d) / s - 1
+    return label_returns(
+        panel, days, price_col, symbol_col, basis=basis, date_col=date_col
     )
-    return result
 
 
 def run_ic_smoke(config_path: Path | str, output_dir: Path | str | None = None) -> Path:
@@ -73,7 +72,8 @@ def run_ic_smoke(config_path: Path | str, output_dir: Path | str | None = None) 
 
     raw = build_smoke_panel(symbols, periods)
     with_factors = compute_factors(raw, factor_names=factors)
-    panel = add_forward_return(with_factors, forward_days)
+    basis = cfg.get("ic_return_basis", "next_open")
+    panel = add_forward_return(with_factors, forward_days, basis=basis)
 
     missing = [f for f in factors if f not in panel.columns]
     if missing:
@@ -87,6 +87,7 @@ def run_ic_smoke(config_path: Path | str, output_dir: Path | str | None = None) 
         "factors": factors,
         "forward_return_days": forward_days,
         "return_col": return_col,
+        "return_basis": basis,
         "rows": len(panel),
         "symbols": symbols,
     }

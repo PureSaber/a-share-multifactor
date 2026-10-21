@@ -11,7 +11,7 @@ import pandas as pd
 def calc_ic(factor: pd.Series, forward_return: pd.Series) -> float:
     """Pearson IC between factor and forward return."""
     aligned = pd.concat([factor, forward_return], axis=1).dropna()
-    if aligned.empty:
+    if len(aligned) < 2 or aligned.nunique().min() < 2:
         return float("nan")
     return float(aligned.iloc[:, 0].corr(aligned.iloc[:, 1]))
 
@@ -19,7 +19,7 @@ def calc_ic(factor: pd.Series, forward_return: pd.Series) -> float:
 def calc_rank_ic(factor: pd.Series, forward_return: pd.Series) -> float:
     """Spearman rank IC between factor and forward return."""
     aligned = pd.concat([factor, forward_return], axis=1).dropna()
-    if aligned.empty:
+    if len(aligned) < 2 or aligned.nunique().min() < 2:
         return float("nan")
     return float(aligned.iloc[:, 0].corr(aligned.iloc[:, 1], method="spearman"))
 
@@ -61,9 +61,7 @@ def summarize_ic(ic_series: pd.Series) -> dict[str, float | int]:
     n_obs = len(clean)
     sample_std = float(clean.std(ddof=1)) if n_obs > 1 else float("nan")
     ic_tstat = (
-        mean_ic / (sample_std / sqrt(n_obs))
-        if n_obs > 1 and sample_std > 0
-        else float("nan")
+        mean_ic / (sample_std / sqrt(n_obs)) if n_obs > 1 and sample_std > 0 else float("nan")
     )
     return {
         "mean_ic": mean_ic,
@@ -88,9 +86,19 @@ def analyze_factors(
         rank_ic_series = calc_ic_series(panel, factor_col, return_col, date_col=date_col, rank=True)
         summary = summarize_ic(ic_series)
         rank_summary = summarize_ic(rank_ic_series)
+        counts = panel[[factor_col, return_col]].notna().all(axis=1).groupby(panel[date_col]).sum()
+        available_counts = counts[counts > 0]
+        basis_column = f"{return_col}_basis"
+        bases = panel[basis_column].dropna().unique() if basis_column in panel else []
         rows.append(
             {
                 "factor": factor_col,
+                "return_basis": str(bases[0]) if len(bases) == 1 else "unspecified_or_mixed",
+                "min_cross_section": int(available_counts.min()) if len(available_counts) else 0,
+                "median_cross_section": float(available_counts.median())
+                if len(available_counts)
+                else 0,
+                "dates_without_labels": int(counts.eq(0).sum()),
                 "mean_ic": summary["mean_ic"],
                 "std_ic": summary["std_ic"],
                 "ir": summary["ir"],
@@ -144,14 +152,17 @@ def analyze_ic_decay(
     date_col: str = "date",
     price_col: str = "close",
     symbol_col: str = "symbol",
+    *,
+    basis: str = "same_close",
 ) -> pd.DataFrame:
     """Compare IC across multiple forward return horizons."""
+    from a_share_multifactor.preprocess import add_forward_return
+
     rows: list[dict[str, float | str | int]] = []
     for horizon in horizons:
         return_col = f"forward_return_{horizon}d"
-        temp = panel.copy()
-        temp[return_col] = temp.groupby(symbol_col)[price_col].transform(
-            lambda s, h=horizon: s.shift(-h) / s - 1
+        temp = add_forward_return(
+            panel, horizon, price_col, symbol_col, basis=basis, date_col=date_col
         )
         for factor_col in factor_cols:
             ic_series = calc_ic_series(temp, factor_col, return_col, date_col=date_col)
@@ -160,6 +171,7 @@ def analyze_ic_decay(
                 {
                     "factor": factor_col,
                     "horizon_days": horizon,
+                    "return_basis": basis,
                     "mean_ic": summary["mean_ic"],
                     "ir": summary["ir"],
                 }
