@@ -174,7 +174,7 @@ def run_pipeline(
     latest_dir = root / "latest"
     latest_dir.mkdir(parents=True, exist_ok=True)
     export_ic_series(panel, factor_cols, config.forward_return_col, latest_dir / "ic_series")
-    ic_decay = analyze_ic_decay(panel, factor_cols, config.ic_decay_horizons, price_col="close")
+    ic_decay = analyze_ic_decay(panel, factor_cols, config.ic_decay_horizons, basis=config.ic_return_basis)
     ic_decay.to_csv(latest_dir / "ic_decay.csv", index=False)
     yearly_ic = ic_by_year(panel, factor_cols, config.forward_return_col)
     yearly_ic.to_csv(latest_dir / "ic_by_year.csv", index=False)
@@ -250,7 +250,7 @@ def main() -> None:
     latest_dir = root / "latest"
     latest_dir.mkdir(parents=True, exist_ok=True)
     export_ic_series(panel, factor_cols, config.forward_return_col, latest_dir / "ic_series")
-    ic_decay = analyze_ic_decay(panel, factor_cols, config.ic_decay_horizons, price_col="close")
+    ic_decay = analyze_ic_decay(panel, factor_cols, config.ic_decay_horizons, basis=config.ic_return_basis)
     ic_decay.to_csv(latest_dir / "ic_decay.csv", index=False)
     yearly_ic = ic_by_year(panel, factor_cols, config.forward_return_col)
     yearly_ic.to_csv(latest_dir / "ic_by_year.csv", index=False)

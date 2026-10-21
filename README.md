@@ -303,3 +303,8 @@ Ruff、完整Pytest，并要求`run_contract.py`纯分支覆盖率不低于97%�
 # 披露证据接入
 
 `asm-disclosures`支持带原文件摘要、单位和修订链的基本面导入，默认按实际采集时点准入。研究工作台会复核来源材料与派生历史；输入和真实性边界见[披露接入说明](docs/DISCLOSURE_IMPORT.md)。
+# IC label conventions
+
+New research runs use next-open forward labels and disclose cross-sectional sample
+counts. See [IC labels and execution timing](docs/ic-label-basis.md) for horizon,
+availability and historical close-to-close compatibility details.

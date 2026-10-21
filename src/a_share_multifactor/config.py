@@ -130,6 +130,7 @@ class AppConfig:
     rebalance_freq: str = "monthly"
     holding_period: str = "rebalance"
     forward_return_days: int = 20
+    ic_return_basis: str = "next_open"
     outputs_dir: str = "outputs"
     instrument_catalog: str | None = None
     data: DataPaths = field(default_factory=DataPaths)
@@ -212,6 +213,7 @@ def _dict_to_config(raw: dict[str, Any]) -> AppConfig:
         rebalance_freq=raw.get("rebalance_freq", defaults.rebalance_freq),
         holding_period=raw.get("holding_period", defaults.holding_period),
         forward_return_days=int(raw.get("forward_return_days", defaults.forward_return_days)),
+        ic_return_basis=raw.get("ic_return_basis", defaults.ic_return_basis),
         outputs_dir=raw.get("outputs_dir", defaults.outputs_dir),
         instrument_catalog=raw.get("instrument_catalog"),
         data=DataPaths(

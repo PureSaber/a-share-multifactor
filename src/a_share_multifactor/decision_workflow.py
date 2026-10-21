@@ -617,7 +617,7 @@ def _run_decision(
             }
         )
         ic = analyze_factors(diagnostic_panel, config.factors, config.forward_return_col)
-        decay = analyze_ic_decay(diagnostic_panel, config.factors, [1, 5, 20])
+        decay = analyze_ic_decay(diagnostic_panel, config.factors, [1, 5, 20], basis=config.ic_return_basis)
         snapshots = {name: f"sha256:{entry['sha256']}" for name, entry in manifest["files"].items()}
         _write_certified_v2(
             run_dir,
