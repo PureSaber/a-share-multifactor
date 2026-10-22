@@ -14,7 +14,7 @@ from a_share_multifactor.run_contract import ReplayInputError, _replay, _TargetW
 def test_unknown_optimizer_hold_latches_and_cannot_turn_into_liquidation(tmp_path, monkeypatch):
     from quant_portfolio.solver import OptimizationError
 
-    dates, raw, adjusted, actions, config, catalog = distribution_fixture(tmp_path)
+    dates, raw, _adjusted, _actions, config, catalog = distribution_fixture(tmp_path)
 
     def failed(self, *args):
         raise OptimizationError("repair_failed", "bounded search failed", {})
