@@ -1253,16 +1253,14 @@ class _RecordingLedger(ExactAccountLedger):
         try:
             return self._mutate_views(callback, event, **kwargs)
         except (ValueError, DataValidationError) as exc:
-            if isinstance(event, CorporateActionEvent):
-                # The native transaction validator has this exact invariant error.
-                # Never present a broken double-entry transaction as share uncertainty.
-                kind = (
-                    "ledger_mismatch"
-                    if str(exc).startswith("ledger transaction is unbalanced:")
-                    else None
-                )
+            # The invariant applies to every ledger event, not just distributions.
+            unbalanced = str(exc).startswith("ledger transaction is unbalanced:")
+            if isinstance(event, CorporateActionEvent) or unbalanced:
                 raise ReplayInputError(
-                    event, str(exc), getattr(exc, "diagnostics", None), failure_kind=kind
+                    event,
+                    str(exc),
+                    getattr(exc, "diagnostics", None),
+                    failure_kind="ledger_mismatch" if unbalanced else None,
                 ) from exc
             raise
 

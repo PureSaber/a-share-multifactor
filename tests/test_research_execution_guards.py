@@ -159,21 +159,23 @@ def test_unknown_optimizer_hold_latches_and_cannot_turn_into_liquidation(tmp_pat
     assert all(r["target_admitted"] is False for r in result.risk_checks if "halt_reason" in r)
 
 
-def test_native_unbalanced_transaction_is_a_hard_stop(tmp_path, monkeypatch):
-    from quant_data_kit import CorporateActionEvent
+@pytest.mark.parametrize("event_type", ["distribution", "bar"])
+def test_native_unbalanced_transaction_is_a_hard_stop(tmp_path, monkeypatch, event_type):
+    from quant_data_kit import BarEvent, CorporateActionEvent
     from quant_data_kit.exceptions import ValidationError
 
     from a_share_multifactor.run_contract import ExactAccountLedger
 
     dates, raw, adjusted, actions, config, catalog = distribution_fixture(tmp_path)
-    original = ExactAccountLedger.apply
+    method = "apply" if event_type == "distribution" else "observe_market"
+    original = getattr(ExactAccountLedger, method)
 
     def unbalanced(self, event, **kwargs):
-        if isinstance(event, CorporateActionEvent):
+        if isinstance(event, CorporateActionEvent if event_type == "distribution" else BarEvent):
             raise ValidationError("ledger transaction is unbalanced: {'CNY': 1}")
         return original(self, event, **kwargs)
 
-    monkeypatch.setattr(ExactAccountLedger, "apply", unbalanced)
+    monkeypatch.setattr(ExactAccountLedger, method, unbalanced)
     with pytest.raises(ReplayInputError) as caught:
         _replay(
             raw,
