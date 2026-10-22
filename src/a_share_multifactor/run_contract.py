@@ -519,6 +519,7 @@ class _TargetWeightStrategy:
         self._target_active = False
         self._peak_nav = float(self.initial_capital)
         self._closing_prices = {}
+        self._closing_dates = {}
         self._risk_halted = False
         self._risk_halt_reason = None
         self._risk_checks = []
@@ -533,6 +534,7 @@ class _TargetWeightStrategy:
             "target_active": self._target_active,
             "peak_nav": self._peak_nav,
             "closing_prices": self._closing_prices.copy(),
+            "closing_dates": self._closing_dates.copy(),
             "risk_halted": self._risk_halted,
             "risk_halt_reason": self._risk_halt_reason,
             "risk_checks": list(self._risk_checks),
@@ -547,6 +549,7 @@ class _TargetWeightStrategy:
         self._target_active = state["target_active"]
         self._peak_nav = state["peak_nav"]
         self._closing_prices = state["closing_prices"].copy()
+        self._closing_dates = state.get("closing_dates", {}).copy()
         self._risk_halted = state["risk_halted"]
         self._risk_halt_reason = state["risk_halt_reason"]
         self._risk_checks = list(state["risk_checks"])
@@ -668,6 +671,7 @@ class _TargetWeightStrategy:
                 "weights": {str(key): float(value) for key, value in weights.items()},
                 "current_weights": current_weights.to_dict(),
                 "targets": target.copy(),
+                "published": True,
                 "diagnostics": diagnostics or weights.attrs.get("allocation_diagnostics", {}),
             }
         )
@@ -792,6 +796,25 @@ class _TargetWeightStrategy:
     def on_event(self, context: StrategyContext, event: BarEvent) -> tuple[OrderIntent, ...]:
         if self.ledger is None:
             return ()
+        if isinstance(event, CorporateActionEvent) and (
+            event.ratio is not None or event.share_entitlement is not None
+        ):
+            # Pre-event share targets cannot survive a change in the share unit.
+            if self.broker is not None:
+                for order in tuple(self.broker.open_orders):
+                    if order.intent.instrument_id == event.instrument_id:
+                        self.broker.cancel(
+                            order.order_id,
+                            idempotency_key=f"unit-event:{event.event_id}:{order.order_id}",
+                            created_at=event.available_at,
+                        )
+                        self.risk_gate.release_order(order)
+            self._deferred_targets = {}
+            self._target_active = False
+            if event.ratio and event.instrument_id in self._closing_prices:
+                price = _decimal(self._closing_prices[event.instrument_id]) / _decimal(event.ratio)
+                self._closing_prices[event.instrument_id] = _fixed(price, _MONEY_SCALE)
+            return ()
         if isinstance(event, StatusEvent):
             if event.status.lower() == "closed":
                 snapshot = self.ledger.snapshot(event.available_at)
@@ -805,6 +828,7 @@ class _TargetWeightStrategy:
         if not hasattr(event, "close_price"):
             return ()
         self._closing_prices[event.instrument_id] = event.close_price
+        self._closing_dates[event.instrument_id] = event.trading_day
         return self._after_close(context, event)
 
     def _after_close(self, context, event):
@@ -828,6 +852,7 @@ class _TargetWeightStrategy:
             )
             if (
                 not compliant
+                and self._risk_halt_reason != "optimizer_failure_holdings"
                 and any(current.values())
                 and (
                     not self._risk_halted
@@ -837,7 +862,7 @@ class _TargetWeightStrategy:
                 self._risk_halted = True
                 self._risk_halt_reason = "exposure_breach"
         if self._peak_nav and 1 - nav / self._peak_nav > self.risk_limits.get("max_drawdown", 1):
-            if (
+            if self._risk_halt_reason != "optimizer_failure_holdings" and (
                 not self._risk_halted
                 or self.risk_limits.get("drawdown_action", "halt") == "liquidate"
             ):
@@ -860,6 +885,8 @@ class _TargetWeightStrategy:
                 else "exposure_breach_action"
             )
             action = self.risk_limits.get(action_field, "halt")
+            if self._risk_halt_reason == "optimizer_failure_holdings":
+                action = "halt"
             self._risk_checks.append(
                 {
                     "session": event.trading_day.isoformat(),
@@ -910,6 +937,59 @@ class _TargetWeightStrategy:
             except OptimizationError as exc:
                 status = exc.status
                 diagnostics = exc.serializable_diagnostics()
+                from quant_portfolio.retained_holdings import audit_retained_holdings
+
+                held_weights = {
+                    a: float(Decimal(q) * _decimal(self._closing_prices[a]) / nav_decimal)
+                    for a, q in current.items()
+                    if q and a in self._closing_prices
+                }
+                states = {} if self.risk_gate is None else self.risk_gate.capture_state()["states"]
+                known = all(
+                    a in states
+                    and self._closing_dates.get(a) == event.trading_day
+                    and states[a].status in {"open", "trading", "normal", "suspended", "halted"}
+                    for a, q in current.items()
+                    if q
+                )
+                held_review = audit_retained_holdings(
+                    diagnostics.get("problem"),
+                    held_weights,
+                    cash=float(_decimal(snapshot.cash_balances["CNY"])),
+                    tradability_known=known,
+                )
+                if not self._portfolio_check(
+                    target=current,
+                    current=current,
+                    nav=nav_decimal,
+                    event=event,
+                    stage="optimizer_failure_holdings",
+                ):
+                    held_review.update(
+                        status="noncompliant",
+                        hold_permitted=False,
+                        reason="current_risk_limits_fail",
+                    )
+                if not held_review["hold_permitted"]:
+                    self._risk_halted = True
+                    self._risk_halt_reason = "optimizer_failure_holdings"
+                diagnostics["retained_holdings"] = held_review
+                from quant_data_kit.failure_policy import assess_fault
+
+                diagnostics["failure_assessment"] = assess_fault(
+                    "optimizer_infeasible_reported"
+                    if status == "infeasible"
+                    else "optimizer_search_failed",
+                    holding_review=held_review,
+                )
+                if self.broker is not None:
+                    for order in tuple(self.broker.open_orders):
+                        self.broker.cancel(
+                            order.order_id,
+                            idempotency_key=f"optimizer-failure:{order.order_id}",
+                            created_at=event.available_at,
+                        )
+                        self.risk_gate.release_order(order)
                 self._deferred_targets = {}
                 self._target_active = False
                 self._allocation_decisions.append(
@@ -1043,10 +1123,21 @@ class _TargetWeightStrategy:
 class ReplayInputError(ValueError):
     """An evidenced event the exact account cannot process; the run is rolled back."""
 
-    def __init__(self, event, reason, diagnostics=None):
+    def __init__(self, event, reason, diagnostics=None, *, failure_kind=None):
         self.occurred_at = event.available_at
         self.instrument_id = event.instrument_id
         self.diagnostics = diagnostics or {"stage": "execution_input", "reason": str(reason)}
+        from quant_data_kit.failure_policy import assess_fault
+
+        kind = failure_kind or (
+            "entitlement_unresolved"
+            if isinstance(event, CorporateActionEvent)
+            else "held_price_unknown"
+        )
+        self.diagnostics = {
+            **self.diagnostics,
+            "failure_assessment": assess_fault(kind, assets=[event.instrument_id]),
+        }
         super().__init__(f"{event.instrument_id} at {event.available_at.isoformat()}: {reason}")
 
 
@@ -1162,8 +1253,15 @@ class _RecordingLedger(ExactAccountLedger):
         try:
             return self._mutate_views(callback, event, **kwargs)
         except (ValueError, DataValidationError) as exc:
-            if isinstance(event, CorporateActionEvent):
-                raise ReplayInputError(event, str(exc), getattr(exc, "diagnostics", None)) from exc
+            # The invariant applies to every ledger event, not just distributions.
+            unbalanced = str(exc).startswith("ledger transaction is unbalanced:")
+            if isinstance(event, CorporateActionEvent) or unbalanced:
+                raise ReplayInputError(
+                    event,
+                    str(exc),
+                    getattr(exc, "diagnostics", None),
+                    failure_kind="ledger_mismatch" if unbalanced else None,
+                ) from exc
             raise
 
     def apply(self, event: Any, **kwargs: Any) -> Any:
@@ -1176,7 +1274,7 @@ class _RecordingLedger(ExactAccountLedger):
                     event,
                     self._share_rules[event.event_id],
                     account_id=self.account_id,
-                    recorded_snapshots=self.recorded_snapshots,
+                    recorded_snapshots=(*self.recorded_snapshots, self.snapshot()),
                 )
             except ValueError as exc:
                 raise ReplayInputError(

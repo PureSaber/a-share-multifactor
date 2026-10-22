@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import asdict, replace
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -8,7 +8,185 @@ import pytest
 from a_share_multifactor.config import AppConfig
 from a_share_multifactor.corporate_actions import action_events
 from a_share_multifactor.decision_workflow import write_watchlist_catalog
-from a_share_multifactor.run_contract import ReplayInputError, _replay, _TargetWeightStrategy
+from a_share_multifactor.run_contract import (
+    ReplayInputError,
+    _fixed,
+    _replay,
+    _TargetWeightStrategy,
+)
+
+
+@pytest.mark.parametrize("with_broker,with_mark", [(True, True), (False, False)])
+def test_unit_change_cancels_only_affected_orders_and_invalidates_targets(
+    tmp_path, with_broker, with_mark
+):
+    dates, raw, adjusted, actions, _, _ = distribution_fixture(tmp_path, ratio="2")
+    event = action_events(actions, raw, adjusted, dates[0], dates[-1])[0]
+    cancelled, released = [], []
+    orders = [
+        SimpleNamespace(order_id=symbol, intent=SimpleNamespace(instrument_id=symbol))
+        for symbol in ["600036", "510300"]
+    ]
+    broker = SimpleNamespace(
+        open_orders=orders,
+        cancel=lambda order_id, **kwargs: cancelled.append((order_id, kwargs)),
+    )
+    strategy = _TargetWeightStrategy(
+        {},
+        ledger=object(),
+        broker=broker if with_broker else None,
+        risk_gate=SimpleNamespace(release_order=lambda order: released.append(order.order_id)),
+    )
+    strategy._deferred_targets = {"600036": 100, "510300": 200}
+    strategy._target_active = True
+    if with_mark:
+        strategy._closing_prices = {"600036": _fixed(10, 2)}
+    assert strategy.on_event(None, event) == ()
+    assert strategy._deferred_targets == {} and not strategy._target_active
+    assert [item[0] for item in cancelled] == (["600036"] if with_broker else [])
+    assert released == (["600036"] if with_broker else [])
+    if with_broker:
+        assert cancelled[0][1]["created_at"] == event.available_at
+    if with_mark:
+        assert strategy._closing_prices["600036"].to_decimal() == Decimal(5)
+    else:
+        assert strategy._closing_prices == {}
+
+
+@pytest.mark.parametrize(
+    "current_risk_passes,with_broker,solver_status",
+    [(True, True, "repair_failed"), (False, True, "infeasible"), (True, False, "repair_failed")],
+)
+def test_failed_optimizer_cancels_orders_and_checks_current_hold_before_allowing_wait(
+    current_risk_passes, with_broker, solver_status, monkeypatch
+):
+    from quant_portfolio.optimization import OptimizationConstraints
+    from quant_portfolio.solver import OptimizationError
+
+    day = pd.Timestamp("2026-07-09").date()
+    event = SimpleNamespace(
+        trading_day=day,
+        instrument_id="600036",
+        available_at=pd.Timestamp("2026-07-09T15:00:00+08:00"),
+    )
+    snapshot = SimpleNamespace(
+        positions={"600036": _fixed(100, 0)},
+        cash_balances={"CNY": _fixed(9000, 2)},
+        nav=_fixed(10000, 2),
+    )
+    problem = {
+        "assets": ["600036"],
+        "current": [0.1],
+        "settings": asdict(OptimizationConstraints(max_weight=0.5)),
+        "budget": 0.8,
+        "lower": [0],
+        "upper": [0.5],
+        "risk": None,
+        "factor_exposures": None,
+        "factor_bounds": None,
+        "benchmark": None,
+    }
+
+    def failed(self, *args):
+        raise OptimizationError(solver_status, "bounded search failed", {"problem": problem})
+
+    monkeypatch.setattr(_TargetWeightStrategy, "_allocation_target", failed)
+    monkeypatch.setattr(
+        _TargetWeightStrategy, "_portfolio_check", lambda self, **kwargs: current_risk_passes
+    )
+    orders = [SimpleNamespace(order_id="pending-buy"), SimpleNamespace(order_id="pending-sell")]
+    cancelled, released = [], []
+    strategy = _TargetWeightStrategy(
+        {},
+        ledger=SimpleNamespace(snapshot=lambda at: snapshot),
+        trigger_symbols={day: "600036"},
+        allocation_schedule={day: {"allocation": {"mode": "mean_variance"}}},
+        broker=SimpleNamespace(
+            open_orders=orders, cancel=lambda order_id, **kwargs: cancelled.append(order_id)
+        )
+        if with_broker
+        else None,
+        risk_gate=SimpleNamespace(
+            capture_state=lambda: {"states": {"600036": SimpleNamespace(status="open")}},
+            release_order=lambda order: released.append(order.order_id),
+        ),
+    )
+    strategy._closing_prices = {"600036": _fixed(10, 2)}
+    strategy._closing_dates = {"600036": day}
+    strategy._deferred_targets = {"600036": 500}
+    strategy._target_active = True
+    assert strategy._after_close(None, event) == ()
+    decision = strategy._allocation_decisions[0]
+    review = decision["diagnostics"]["retained_holdings"]
+    assert review["hold_permitted"] is current_risk_passes
+    assert decision["published"] is False
+    assert strategy._risk_halted is (not current_risk_passes)
+    assert strategy._deferred_targets == {} and not strategy._target_active
+    assert cancelled == released == (["pending-buy", "pending-sell"] if with_broker else [])
+    if not current_risk_passes:
+        assert review["reason"] == "current_risk_limits_fail"
+        assert strategy._risk_halt_reason == "optimizer_failure_holdings"
+
+
+def test_unknown_optimizer_hold_latches_and_cannot_turn_into_liquidation(tmp_path, monkeypatch):
+    from quant_portfolio.solver import OptimizationError
+
+    dates, raw, _adjusted, _actions, config, catalog = distribution_fixture(tmp_path)
+
+    def failed(self, *args):
+        raise OptimizationError("repair_failed", "bounded search failed", {})
+
+    def risk_check(self, **kwargs):
+        # Simulate an additional exposure breach after the optimizer stop.
+        return self._risk_halt_reason != "optimizer_failure_holdings"
+
+    monkeypatch.setattr(_TargetWeightStrategy, "_allocation_target", failed)
+    monkeypatch.setattr(_TargetWeightStrategy, "_portfolio_check", risk_check)
+    result = _replay(
+        raw,
+        config,
+        "failed-hold",
+        catalog_path=catalog,
+        target_schedule={dates[0].date(): {"600036": 100}},
+        allocation_schedule={dates[1].date(): {"allocation": {"mode": "mean_variance"}}},
+        risk_limits={"exposure_breach_action": "liquidate"},
+    )
+    decision = result.allocation_decisions[0]
+    assert decision["published"] is False
+    assert decision["diagnostics"]["retained_holdings"]["hold_permitted"] is False
+    assert decision["diagnostics"]["failure_assessment"]["trade_permission"] == "none"
+    assert result.ledger.snapshot().positions["600036"].to_decimal() == 100
+    assert all(r["target_admitted"] is False for r in result.risk_checks if "halt_reason" in r)
+
+
+@pytest.mark.parametrize("event_type", ["distribution", "bar"])
+def test_native_unbalanced_transaction_is_a_hard_stop(tmp_path, monkeypatch, event_type):
+    from quant_data_kit import BarEvent, CorporateActionEvent
+    from quant_data_kit.exceptions import ValidationError
+
+    from a_share_multifactor.run_contract import ExactAccountLedger
+
+    dates, raw, adjusted, actions, config, catalog = distribution_fixture(tmp_path)
+    method = "apply" if event_type == "distribution" else "observe_market"
+    original = getattr(ExactAccountLedger, method)
+
+    def unbalanced(self, event, **kwargs):
+        if isinstance(event, CorporateActionEvent if event_type == "distribution" else BarEvent):
+            raise ValidationError("ledger transaction is unbalanced: {'CNY': 1}")
+        return original(self, event, **kwargs)
+
+    monkeypatch.setattr(ExactAccountLedger, method, unbalanced)
+    with pytest.raises(ReplayInputError) as caught:
+        _replay(
+            raw,
+            config,
+            "unbalanced",
+            catalog_path=catalog,
+            corporate_actions=action_events(actions, raw, adjusted, dates[0], dates[-1]),
+        )
+    fault = caught.value.diagnostics["failure_assessment"]
+    assert fault["tier"] == "hard_stop" and fault["kind"] == "ledger_mismatch"
+    assert fault["evidence_status"] == "unknown" and fault["trade_permission"] == "none"
 
 
 def distribution_fixture(tmp_path, *, cash="1", ratio="1", reference_cash="0.8"):
