@@ -11,6 +11,37 @@ from a_share_multifactor.decision_workflow import write_watchlist_catalog
 from a_share_multifactor.run_contract import ReplayInputError, _replay, _TargetWeightStrategy
 
 
+def test_unknown_optimizer_hold_latches_and_cannot_turn_into_liquidation(tmp_path, monkeypatch):
+    from quant_portfolio.solver import OptimizationError
+
+    dates, raw, adjusted, actions, config, catalog = distribution_fixture(tmp_path)
+
+    def failed(self, *args):
+        raise OptimizationError("repair_failed", "bounded search failed", {})
+
+    def risk_check(self, **kwargs):
+        # Simulate an additional exposure breach after the optimizer stop.
+        return self._risk_halt_reason != "optimizer_failure_holdings"
+
+    monkeypatch.setattr(_TargetWeightStrategy, "_allocation_target", failed)
+    monkeypatch.setattr(_TargetWeightStrategy, "_portfolio_check", risk_check)
+    result = _replay(
+        raw,
+        config,
+        "failed-hold",
+        catalog_path=catalog,
+        target_schedule={dates[0].date(): {"600036": 100}},
+        allocation_schedule={dates[1].date(): {"allocation": {"mode": "mean_variance"}}},
+        risk_limits={"exposure_breach_action": "liquidate"},
+    )
+    decision = result.allocation_decisions[0]
+    assert decision["published"] is False
+    assert decision["diagnostics"]["retained_holdings"]["hold_permitted"] is False
+    assert decision["diagnostics"]["failure_assessment"]["trade_permission"] == "none"
+    assert result.ledger.snapshot().positions["600036"].to_decimal() == 100
+    assert all(r["target_admitted"] is False for r in result.risk_checks if "halt_reason" in r)
+
+
 def distribution_fixture(tmp_path, *, cash="1", ratio="1", reference_cash="0.8"):
     dates = pd.bdate_range("2026-07-08", periods=4)
     raw = pd.DataFrame(

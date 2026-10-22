@@ -82,7 +82,22 @@ def action_events(
             selected[key] = pd.to_datetime(selected[key])
         if selected.ex_date.isna().any():
             raise ValueError("Corporate-action feed has unknown ex-dates")
-        selected = selected[(selected.ex_date > start) & (selected.ex_date <= end)]
+        credit_days = selected.ex_date.copy()
+        has_credit = pd.Series(False, index=selected.index)
+        if "credit_at" in selected:
+            has_credit = selected.credit_at.notna()
+            credit_days.loc[has_credit] = (
+                pd.to_datetime(selected.loc[has_credit, "credit_at"], utc=True)
+                .dt.tz_convert("Asia/Shanghai")
+                .dt.tz_localize(None)
+                .dt.normalize()
+            )
+        # Unit credit can occur on the record-date close, before the ex-date.
+        # Keep factor evidence for the ex-date even when credit precedes the window.
+        selected = selected[
+            ((selected.ex_date > start) & (selected.ex_date <= end))
+            | (has_credit & credit_days.between(start, end))
+        ]
         if selected.duplicated(["symbol", "ex_date"]).any():
             raise ValueError("Duplicate corporate actions")
     events, by_key = [], {}
@@ -106,6 +121,9 @@ def action_events(
         if ratio != 1 and row.shares_available_date != row.ex_date:
             raise ValueError("Deferred share delivery requires a share receivables ledger; blocked")
         at = (row.ex_date.tz_localize("Asia/Shanghai") + pd.Timedelta(hours=9)).tz_convert("UTC")
+        credit = getattr(row, "credit_at", None)
+        if pd.notna(credit):
+            at = pd.Timestamp(credit).tz_convert("UTC")
 
         def fixed(value):
             scaled = value * 10**8
@@ -114,7 +132,10 @@ def action_events(
             return FixedPoint(int(scaled), 8)
 
         deferred_cash = bool(cash and row.pay_date != row.ex_date)
-        holder_events = [] if cash == 0 and ratio == 1 else events
+        credit_day = pd.Timestamp(at).tz_convert("Asia/Shanghai").tz_localize(None).normalize()
+        holder_events = (
+            [] if (cash == 0 and ratio == 1) or not start <= credit_day <= end else events
+        )
         holder_events.append(
             CorporateActionEvent(
                 event_id=(row.event_id + ":entitlement" if deferred_cash else row.event_id),
@@ -123,13 +144,13 @@ def action_events(
                 available_at=at.to_pydatetime(),
                 received_at=at.to_pydatetime(),
                 source=row.source,
-                trading_day=row.ex_date.date(),
-                session_id="CN-A-SHARE:" + str(row.ex_date.date()),
+                trading_day=at.tz_convert("Asia/Shanghai").date(),
+                session_id="CN-A-SHARE:" + str(at.tz_convert("Asia/Shanghai").date()),
                 sequence=0,
                 action_type=(
                     "cash_dividend_entitlement" if deferred_cash else "cash_and_share_distribution"
                 ),
-                effective_date=row.ex_date.date(),
+                effective_date=credit_day.date(),
                 cash_amount=fixed(cash) if cash else None,
                 currency="CNY" if cash else None,
                 ratio=fixed(ratio) if ratio != 1 or cash == 0 else None,
@@ -227,3 +248,30 @@ def action_events(
                 "Corporate-action/adjustment differences require a matching cashflow feed"
             )
     return tuple(sorted(events, key=lambda e: (e.available_at, e.instrument_id)))
+
+
+def split_share_rules(actions, raw):
+    """Bind per-account rounding and reference marks to exact issuer terms."""
+    rules = {}
+    if actions is None or "credit_at" not in actions:
+        return rules
+    for row in actions[actions.credit_at.notna()].itertuples():
+        ratio = Decimal(str(row.share_ratio))
+        previous = raw[(raw.symbol == row.symbol) & (raw.date == pd.Timestamp(row.record_date))]
+        if len(previous) != 1 or ratio <= 1:
+            raise ValueError("split requires the real record-date raw close and expansion ratio")
+        reference = (Decimal(str(previous.iloc[0].close)) / ratio).quantize(Decimal("0.00000001"))
+        rules[row.event_id] = {
+            "entitlement_id": row.event_id,
+            "record_date": str(pd.Timestamp(row.record_date).date()),
+            "ordinary_additional_ratio": str(ratio - 1),
+            "known_at": row.known_at,
+            "credit_at": row.credit_at,
+            "sellable_date": str(pd.Timestamp(row.shares_available_date).date()),
+            "evidence_source": row.evidence_source,
+            "evidence_sha256": row.evidence_sha256,
+            "evidence_status": "rule_determined",
+            "fractional_rule": row.fractional_rule,
+            "reference_price": str(reference),
+        }
+    return rules

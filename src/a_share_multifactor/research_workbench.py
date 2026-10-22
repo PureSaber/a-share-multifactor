@@ -27,7 +27,7 @@ from quant_portfolio import validate_research_allocation
 
 from a_share_multifactor.calendar import rebalance_dates
 from a_share_multifactor.config import _dict_to_config
-from a_share_multifactor.corporate_actions import action_events
+from a_share_multifactor.corporate_actions import action_events, split_share_rules
 from a_share_multifactor.decision_workflow import load_inputs, validate_inputs
 from a_share_multifactor.disclosures import load_research_history
 from a_share_multifactor.performance import return_statistics
@@ -41,6 +41,36 @@ from a_share_multifactor.run_contract import (
 
 _EXECUTION_FIELDS = {"mode", "universe_field", "status_fields", "max_retry_sessions"}
 _STATUS_FIELDS = {"listed", "delisted", "tradable", "limit_up", "limit_down"}
+
+
+def paired_benchmark_evidence(returns, benchmark, benchmark_id):
+    """Attach paired net strategy returns only when the benchmark identity is known."""
+    from quant_lab.research_gates import METRICS, _stat
+
+    known_id = None
+    if "benchmark_id" in benchmark and benchmark.benchmark_id.nunique() == 1:
+        known_id = benchmark.benchmark_id.iloc[0]
+    if not benchmark_id or known_id != benchmark_id:
+        return {}
+    if benchmark.date.duplicated().any():
+        raise ValueError("paired benchmark observations must be unique")
+    sample = returns.iloc[1:]  # The first close initializes the account; it is not a return.
+    reference = benchmark.set_index("date").benchmark_return.reindex(sample.index)
+    if reference.isna().any() or not np.isfinite(reference).all():
+        raise ValueError("paired benchmark is incomplete")
+    values = np.column_stack([sample, reference])
+    result = {
+        "paired_returns": [
+            {"date": str(d.date()), "strategy": float(a), "benchmark": float(b)}
+            for d, a, b in zip(sample.index, sample, reference)
+        ]
+    }
+    for metric in sorted(METRICS):
+        try:
+            result[metric] = _stat(values, metric)
+        except ValueError:
+            result[metric] = None
+    return result
 
 
 def validate_research_execution(value: Mapping[str, object]) -> dict[str, object]:
@@ -956,6 +986,7 @@ class EquityResearchExecutor:
             candidate["candidate_id"],
             catalog_path=catalog,
             corporate_actions=actions,
+            share_rules=split_share_rules(frames.get("actions"), raw),
             target_schedule=schedule,
             allocation_schedule=allocation_schedule,
             status_events=prepared["status_events"],
@@ -1057,9 +1088,21 @@ class EquityResearchExecutor:
                     "net_return": float((1 + group).prod() - 1),
                 }
             )
+        from quant_portfolio.retained_holdings import publishing_summary
+
+        faults = [
+            r.get("diagnostics", {}).get("failure_assessment", {})
+            for r in replay.allocation_decisions
+        ]
+        evidence_status = (
+            "unknown" if any(f.get("evidence_status") == "unknown" for f in faults) else "validated"
+        )
+
         return {
             "metrics": metrics,
+            "evidence_status": evidence_status,
             "optimizer_summary": {
+                **publishing_summary(list(replay.allocation_decisions)),
                 "decisions": list(replay.allocation_decisions),
                 "failed_decisions": sum(
                     row.get("published") is False for row in replay.allocation_decisions
@@ -1076,6 +1119,10 @@ class EquityResearchExecutor:
                 "execution_artifact": "execution_diagnostics.json",
             },
             "investment_evidence": {
+                "evidence_status": evidence_status,
+                **paired_benchmark_evidence(
+                    returns, frames["benchmark"], recipe.get("objective", {}).get("benchmark_id")
+                ),
                 "benchmark_id": recipe.get("objective", {}).get("benchmark_id"),
                 "net_return": metrics["total_return"],
                 "sharpe": metrics["sharpe"],
