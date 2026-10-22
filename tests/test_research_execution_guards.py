@@ -42,6 +42,34 @@ def test_unknown_optimizer_hold_latches_and_cannot_turn_into_liquidation(tmp_pat
     assert all(r["target_admitted"] is False for r in result.risk_checks if "halt_reason" in r)
 
 
+def test_native_unbalanced_transaction_is_a_hard_stop(tmp_path, monkeypatch):
+    from quant_data_kit import CorporateActionEvent
+    from quant_data_kit.exceptions import ValidationError
+
+    from a_share_multifactor.run_contract import ExactAccountLedger
+
+    dates, raw, adjusted, actions, config, catalog = distribution_fixture(tmp_path)
+    original = ExactAccountLedger.apply
+
+    def unbalanced(self, event, **kwargs):
+        if isinstance(event, CorporateActionEvent):
+            raise ValidationError("ledger transaction is unbalanced: {'CNY': 1}")
+        return original(self, event, **kwargs)
+
+    monkeypatch.setattr(ExactAccountLedger, "apply", unbalanced)
+    with pytest.raises(ReplayInputError) as caught:
+        _replay(
+            raw,
+            config,
+            "unbalanced",
+            catalog_path=catalog,
+            corporate_actions=action_events(actions, raw, adjusted, dates[0], dates[-1]),
+        )
+    fault = caught.value.diagnostics["failure_assessment"]
+    assert fault["tier"] == "hard_stop" and fault["kind"] == "ledger_mismatch"
+    assert fault["evidence_status"] == "unknown" and fault["trade_permission"] == "none"
+
+
 def distribution_fixture(tmp_path, *, cash="1", ratio="1", reference_cash="0.8"):
     dates = pd.bdate_range("2026-07-08", periods=4)
     raw = pd.DataFrame(

@@ -1123,13 +1123,13 @@ class _TargetWeightStrategy:
 class ReplayInputError(ValueError):
     """An evidenced event the exact account cannot process; the run is rolled back."""
 
-    def __init__(self, event, reason, diagnostics=None):
+    def __init__(self, event, reason, diagnostics=None, *, failure_kind=None):
         self.occurred_at = event.available_at
         self.instrument_id = event.instrument_id
         self.diagnostics = diagnostics or {"stage": "execution_input", "reason": str(reason)}
         from quant_data_kit.failure_policy import assess_fault
 
-        kind = (
+        kind = failure_kind or (
             "entitlement_unresolved"
             if isinstance(event, CorporateActionEvent)
             else "held_price_unknown"
@@ -1254,7 +1254,16 @@ class _RecordingLedger(ExactAccountLedger):
             return self._mutate_views(callback, event, **kwargs)
         except (ValueError, DataValidationError) as exc:
             if isinstance(event, CorporateActionEvent):
-                raise ReplayInputError(event, str(exc), getattr(exc, "diagnostics", None)) from exc
+                # The native transaction validator has this exact invariant error.
+                # Never present a broken double-entry transaction as share uncertainty.
+                kind = (
+                    "ledger_mismatch"
+                    if str(exc).startswith("ledger transaction is unbalanced:")
+                    else None
+                )
+                raise ReplayInputError(
+                    event, str(exc), getattr(exc, "diagnostics", None), failure_kind=kind
+                ) from exc
             raise
 
     def apply(self, event: Any, **kwargs: Any) -> Any:
